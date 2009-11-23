@@ -346,6 +346,10 @@ int fsk_rx(fsk_rx_state_t *s, const int16_t *amp, int len)
         if (s->lastbit != baudstate)
         {
             s->lastbit = baudstate;
+            s->baud_chg ^= 1;
+	} else if (s->baud_chg) {
+            /* Ensure baudstate change to prevent one baudstate error. */
+            s->baud_chg = 0;
             if (s->sync_mode)
             {
                 /* For synchronous use (e.g. HDLC channels in FAX modems), nudge
@@ -363,7 +367,7 @@ int fsk_rx(fsk_rx_state_t *s, const int16_t *amp, int len)
                 /* We must now be about half way to a sampling point. We do not do
                    any fractional sample estimation of the transitions, so this is
                    the most accurate baud alignment we can do. */
-                s->baud_pll = 0x8000;
+                s->baud_pll = 0x8000 + s->baud_inc;
             }
 
         }
@@ -372,7 +376,7 @@ int fsk_rx(fsk_rx_state_t *s, const int16_t *amp, int len)
             /* We should be in the middle of a baud now, so report the current
                state as the next bit */
             s->baud_pll -= 0x10000;
-            s->put_bit(s->user_data, baudstate);
+            s->put_bit(s->user_data, baudstate ^ s->baud_chg);
         }
         if (++buf_ptr >= s->correlation_span)
             buf_ptr = 0;

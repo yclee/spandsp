@@ -164,6 +164,7 @@ typedef struct
 
     int baud_inc;
     int baud_pll;
+    int baud_chg;
     int lastbit;
     int scaling_shift;
 } fsk_rx_state_t;
