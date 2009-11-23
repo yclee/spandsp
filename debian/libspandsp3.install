@@ -1,0 +1,4 @@
+debian/tmp/usr/lib/libspandsp.so.0.*
+debian/tmp/usr/lib/libspandsp.so.0
+debian/tmp/usr/share/spandsp/global-tones.xml
+debian/tmp/usr/share/spandsp/tones.dtd
