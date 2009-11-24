@@ -371,6 +371,8 @@ int fsk_rx(fsk_rx_state_t *s, const int16_t *amp, int len)
             }
 
         }
+        /* dirty fix: think more on transition to 1 */
+        if (!s->baud_chg || !baudstate)
         if ((s->baud_pll += s->baud_inc) >= 0x10000)
         {
             /* We should be in the middle of a baud now, so report the current
