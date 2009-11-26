@@ -346,10 +346,6 @@ int fsk_rx(fsk_rx_state_t *s, const int16_t *amp, int len)
         if (s->lastbit != baudstate)
         {
             s->lastbit = baudstate;
-            s->baud_chg ^= 1;
-	} else if (s->baud_chg) {
-            /* Ensure baudstate change to prevent one baudstate error. */
-            s->baud_chg = 0;
             if (s->sync_mode)
             {
                 /* For synchronous use (e.g. HDLC channels in FAX modems), nudge
@@ -360,6 +356,10 @@ int fsk_rx(fsk_rx_state_t *s, const int16_t *amp, int len)
                     s->baud_pll -= (s->baud_inc >> 3);
             }
             else
+                s->baud_chg ^= 1;
+	} else if (s->baud_chg) {
+            /* Ensure baudstate change to prevent one baudstate error. */
+            s->baud_chg = 0;
             {
                 /* For async. operation, believe transitions completely, and
                    sample appropriately. This allows instant start on the first
