@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: hdlc_tests.c,v 1.38 2007/11/10 11:14:58 steveu Exp $
+ * $Id: hdlc_tests.c,v 1.48 2008/11/30 05:43:37 steveu Exp $
  */
 
 /*! \file */
@@ -33,15 +33,17 @@ The HDLC tests exercise the HDLC module, and verifies correct operation
 using both 16 and 32 bit CRCs.
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <string.h>
 
 #include "spandsp.h"
+#include "spandsp/private/hdlc.h"
 
 int ref_len;
 uint8_t buf[1000];
@@ -92,43 +94,15 @@ static void frame_handler(void *user_data, const uint8_t *pkt, int len, int ok)
     if (len < 0)
     {
         /* Special conditions */
+        printf("HDLC rx status is %s (%d)\n", signal_status_to_str(len), len);
         switch (len)
         {
-        case PUTBIT_TRAINING_IN_PROGRESS:
-            printf("Training in progress\n");
-            break;
-        case PUTBIT_TRAINING_FAILED:
-            printf("Training failed\n");
-            break;
-        case PUTBIT_TRAINING_SUCCEEDED:
-            printf("Training succeeded\n");
-            break;
-        case PUTBIT_CARRIER_UP:
-            printf("Carrier up\n");
-            break;
-        case PUTBIT_CARRIER_DOWN:
-            printf("Carrier down\n");
-            break;
-        case PUTBIT_FRAMING_OK:
+        case SIG_STATUS_FRAMING_OK:
             framing_ok_reported = TRUE;
             framing_ok_reports++;
-            //printf("Framing OK\n");
             break;
-        case PUTBIT_END_OF_DATA:
-            printf("End of data\n");
-            break;
-        case PUTBIT_ABORT:
+        case SIG_STATUS_ABORT:
             abort_reported = TRUE;
-            //printf("Abort\n");
-            break;
-        case PUTBIT_BREAK:
-            printf("Break\n");
-            break;
-        case PUTBIT_OCTET_REPORT:
-            printf("Octet report\n");
-            break;
-        default:
-            printf("Eh!\n");
             break;
         }
         return;
@@ -705,6 +679,7 @@ static int test_hdlc_abort_handling(void)
 }
 /*- End of function --------------------------------------------------------*/
 
+#if 0
 static int test_hdlc_octet_count_handling(void)
 {
     int i;
@@ -776,8 +751,9 @@ static int test_hdlc_octet_count_handling(void)
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
+#endif
 
-int main(int argc, char *argv[])
+static void hdlc_tests(void)
 {
     printf("HDLC module tests\n");
 
@@ -809,6 +785,82 @@ int main(int argc, char *argv[])
     }
 #endif
     printf("Tests passed.\n");
+}
+/*- End of function --------------------------------------------------------*/
+
+static void decode_handler(void *user_data, const uint8_t *pkt, int len, int ok)
+{
+    int i;
+
+    if (len < 0)
+    {
+        /* Special conditions */
+        printf("HDLC rx status is %s (%d)\n", signal_status_to_str(len), len);
+        return;
+    }
+    if (ok)
+    {
+        printf("Good frame, len = %d\n", len);
+        printf("HDLC:  ");
+        for (i = 0;  i < len;  i++)
+            printf("%02X ", pkt[i]);
+        printf("\n");
+    }
+    else
+    {
+        printf("Bad frame, len = %d\n", len);
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+static void decode_bitstream(const char *in_file_name)
+{
+    char buf[1024];
+    int bit;
+    hdlc_rx_state_t rx;
+    FILE *in;
+    
+    if ((in = fopen(in_file_name, "r")) == NULL)
+    {
+        fprintf(stderr, "Failed to open '%s'\n", in_file_name);
+        exit(2);
+    }
+
+    hdlc_rx_init(&rx, FALSE, TRUE, 2, decode_handler, NULL);
+    while (fgets(buf, 1024, in))
+    {
+        if (sscanf(buf, "Rx bit %*d - %d", &bit) == 1)
+        {
+            hdlc_rx_put_bit(&rx, bit);
+        }
+    }
+    fclose(in);
+}
+/*- End of function --------------------------------------------------------*/
+
+int main(int argc, char *argv[])
+{
+    int opt;
+    const char *in_file_name;
+
+    in_file_name = NULL;
+    while ((opt = getopt(argc, argv, "d:")) != -1)
+    {
+        switch (opt)
+        {
+        case 'd':
+            in_file_name = optarg;
+            break;
+        default:
+            //usage();
+            exit(2);
+            break;
+        }
+    }
+    if (in_file_name)
+        decode_bitstream(in_file_name);
+    else
+        hdlc_tests();
     return  0;
 }
 /*- End of function --------------------------------------------------------*/

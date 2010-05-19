@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: queue.c,v 1.18 2007/11/30 12:20:34 steveu Exp $
+ * $Id: queue.c,v 1.31 2009/04/11 18:11:19 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdio.h>
@@ -39,17 +39,19 @@
 #include <inttypes.h>
 #include <sys/types.h>
 
-#include <tiffio.h>
-
+#define SPANDSP_FULLY_DEFINE_QUEUE_STATE_T
+#include "spandsp/telephony.h"
 #include "spandsp/queue.h"
 
-int queue_empty(queue_state_t *s)
+#include "spandsp/private/queue.h"
+
+SPAN_DECLARE(int) queue_empty(queue_state_t *s)
 {
     return (s->iptr == s->optr);
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_free_space(queue_state_t *s)
+SPAN_DECLARE(int) queue_free_space(queue_state_t *s)
 {
     int len;
     
@@ -60,7 +62,7 @@ int queue_free_space(queue_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_contents(queue_state_t *s)
+SPAN_DECLARE(int) queue_contents(queue_state_t *s)
 {
     int len;
     
@@ -71,13 +73,13 @@ int queue_contents(queue_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-void queue_flush(queue_state_t *s)
+SPAN_DECLARE(void) queue_flush(queue_state_t *s)
 {
     s->optr = s->iptr;
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_view(queue_state_t *s, uint8_t *buf, int len)
+SPAN_DECLARE(int) queue_view(queue_state_t *s, uint8_t *buf, int len)
 {
     int real_len;
     int to_end;
@@ -127,7 +129,7 @@ int queue_view(queue_state_t *s, uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_read(queue_state_t *s, uint8_t *buf, int len)
+SPAN_DECLARE(int) queue_read(queue_state_t *s, uint8_t *buf, int len)
 {
     int real_len;
     int to_end;
@@ -174,7 +176,7 @@ int queue_read(queue_state_t *s, uint8_t *buf, int len)
             memcpy(buf, s->data + optr, real_len);
         /*endif*/
         new_optr = optr + real_len;
-        if (new_optr > s->len)
+        if (new_optr >= s->len)
             new_optr = 0;
         /*endif*/
     }
@@ -185,7 +187,7 @@ int queue_read(queue_state_t *s, uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_read_byte(queue_state_t *s)
+SPAN_DECLARE(int) queue_read_byte(queue_state_t *s)
 {
     int real_len;
     int to_end;
@@ -213,7 +215,7 @@ int queue_read_byte(queue_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_write(queue_state_t *s, const uint8_t *buf, int len)
+SPAN_DECLARE(int) queue_write(queue_state_t *s, const uint8_t *buf, int len)
 {
     int real_len;
     int to_end;
@@ -248,7 +250,7 @@ int queue_write(queue_state_t *s, const uint8_t *buf, int len)
         /* A one step process */
         memcpy(s->data + iptr, buf, real_len);
         new_iptr = iptr + real_len;
-        if (new_iptr > s->len)
+        if (new_iptr >= s->len)
             new_iptr = 0;
         /*endif*/
     }
@@ -266,7 +268,7 @@ int queue_write(queue_state_t *s, const uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_write_byte(queue_state_t *s, uint8_t byte)
+SPAN_DECLARE(int) queue_write_byte(queue_state_t *s, uint8_t byte)
 {
     int real_len;
     int iptr;
@@ -297,7 +299,7 @@ int queue_write_byte(queue_state_t *s, uint8_t byte)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_state_test_msg(queue_state_t *s)
+SPAN_DECLARE(int) queue_state_test_msg(queue_state_t *s)
 {
     uint16_t lenx;
 
@@ -308,7 +310,7 @@ int queue_state_test_msg(queue_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_read_msg(queue_state_t *s, uint8_t *buf, int len)
+SPAN_DECLARE(int) queue_read_msg(queue_state_t *s, uint8_t *buf, int len)
 {
     uint16_t lenx;
 
@@ -334,7 +336,7 @@ int queue_read_msg(queue_state_t *s, uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
+SPAN_DECLARE(int) queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
 {
     int real_len;
     int to_end;
@@ -350,10 +352,10 @@ int queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
     if ((real_len = optr - iptr - 1) < 0)
         real_len += s->len;
     /*endif*/
-    if (real_len < len + sizeof(uint16_t))
+    if (real_len < len + (int) sizeof(uint16_t))
         return -1;
     /*endif*/
-    real_len = len + sizeof(uint16_t);
+    real_len = len + (int) sizeof(uint16_t);
 
     to_end = s->len - iptr;
     lenx = (uint16_t) len;
@@ -363,7 +365,7 @@ int queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
         memcpy(s->data + iptr, &lenx, sizeof(uint16_t));
         memcpy(s->data + iptr + sizeof(uint16_t), buf, len);
         new_iptr = iptr + real_len;
-        if (new_iptr > s->len)
+        if (new_iptr >= s->len)
             new_iptr = 0;
         /*endif*/
     }
@@ -393,7 +395,7 @@ int queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-queue_state_t *queue_init(queue_state_t *s, int len, int flags)
+SPAN_DECLARE(queue_state_t *) queue_init(queue_state_t *s, int len, int flags)
 {
     if (s == NULL)
     {
@@ -408,7 +410,13 @@ queue_state_t *queue_init(queue_state_t *s, int len, int flags)
 }
 /*- End of function --------------------------------------------------------*/
 
-int queue_free(queue_state_t *s)
+SPAN_DECLARE(int) queue_release(queue_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) queue_free(queue_state_t *s)
 {
     free(s);
     return 0;

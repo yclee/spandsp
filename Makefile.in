@@ -38,20 +38,27 @@ POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
 DIST_COMMON = README $(am__configure_deps) $(srcdir)/Makefile.am \
-	$(srcdir)/Makefile.in $(srcdir)/spandsp.spec.in \
-	$(top_srcdir)/configure AUTHORS COPYING ChangeLog INSTALL NEWS \
-	config/config.guess config/config.sub config/depcomp \
-	config/install-sh config/ltmain.sh config/missing
+	$(srcdir)/Makefile.in $(srcdir)/spandsp.pc.in \
+	$(srcdir)/spandsp.spec.in $(top_srcdir)/configure AUTHORS \
+	COPYING ChangeLog INSTALL NEWS config/config.guess \
+	config/config.sub config/depcomp config/install-sh \
+	config/ltmain.sh config/missing
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
-am__aclocal_m4_deps = $(top_srcdir)/configure.ac
+am__aclocal_m4_deps = $(top_srcdir)/config/ax_compiler_vendor.m4 \
+	$(top_srcdir)/config/ax_check_real_file.m4 \
+	$(top_srcdir)/config/ax_fixed_point_machine.m4 \
+	$(top_srcdir)/config/ax_misaligned_access_fails.m4 \
+	$(top_srcdir)/config/ax_c99_features.m4 \
+	$(top_srcdir)/config/ax_check_export_capability.m4 \
+	$(top_srcdir)/configure.ac
 am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
 	$(ACLOCAL_M4)
 am__CONFIG_DISTCLEAN_FILES = config.status config.cache config.log \
  configure.lineno configure.status.lineno
 mkinstalldirs = $(install_sh) -d
 CONFIG_HEADER = $(top_builddir)/src/config.h
-CONFIG_CLEAN_FILES = spandsp.spec
+CONFIG_CLEAN_FILES = spandsp.pc spandsp.spec
 SCRIPTS = $(noinst_SCRIPTS)
 SOURCES =
 DIST_SOURCES =
@@ -67,9 +74,9 @@ am__vpath_adj = case $$p in \
     *) f=$$p;; \
   esac;
 am__strip_dir = `echo $$p | sed -e 's|^.*/||'`;
-am__installdirs = "$(DESTDIR)$(datadir)"
-nobase_dataDATA_INSTALL = $(install_sh_DATA)
-DATA = $(nobase_data_DATA)
+am__installdirs = "$(DESTDIR)$(pkgconfigdir)"
+pkgconfigDATA_INSTALL = $(INSTALL_DATA)
+DATA = $(pkgconfig_DATA)
 ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
@@ -97,18 +104,34 @@ CCDEPMODE = @CCDEPMODE@
 CC_FOR_BUILD = @CC_FOR_BUILD@
 CFLAGS = @CFLAGS@
 COMP_VENDOR_CFLAGS = @COMP_VENDOR_CFLAGS@
+COMP_VENDOR_LDFLAGS = @COMP_VENDOR_LDFLAGS@
 COND_DOC_FALSE = @COND_DOC_FALSE@
 COND_DOC_TRUE = @COND_DOC_TRUE@
-COND_ITUTESTS_FALSE = @COND_ITUTESTS_FALSE@
-COND_ITUTESTS_TRUE = @COND_ITUTESTS_TRUE@
 COND_MMX_FALSE = @COND_MMX_FALSE@
 COND_MMX_TRUE = @COND_MMX_TRUE@
+COND_SSE2_FALSE = @COND_SSE2_FALSE@
+COND_SSE2_TRUE = @COND_SSE2_TRUE@
+COND_SSE3_FALSE = @COND_SSE3_FALSE@
+COND_SSE3_TRUE = @COND_SSE3_TRUE@
+COND_SSE4A_FALSE = @COND_SSE4A_FALSE@
+COND_SSE4A_TRUE = @COND_SSE4A_TRUE@
+COND_SSE4_1_FALSE = @COND_SSE4_1_FALSE@
+COND_SSE4_1_TRUE = @COND_SSE4_1_TRUE@
+COND_SSE4_2_FALSE = @COND_SSE4_2_FALSE@
+COND_SSE4_2_TRUE = @COND_SSE4_2_TRUE@
+COND_SSE5_FALSE = @COND_SSE5_FALSE@
+COND_SSE5_TRUE = @COND_SSE5_TRUE@
 COND_SSE_FALSE = @COND_SSE_FALSE@
 COND_SSE_TRUE = @COND_SSE_TRUE@
+COND_SSSE3_FALSE = @COND_SSSE3_FALSE@
+COND_SSSE3_TRUE = @COND_SSSE3_TRUE@
+COND_TESTDATA_FALSE = @COND_TESTDATA_FALSE@
+COND_TESTDATA_TRUE = @COND_TESTDATA_TRUE@
 COND_TESTS_FALSE = @COND_TESTS_FALSE@
 COND_TESTS_TRUE = @COND_TESTS_TRUE@
 CPP = @CPP@
 CPPFLAGS = @CPPFLAGS@
+CPPFLAGS_FOR_BUILD = @CPPFLAGS_FOR_BUILD@
 CXX = @CXX@
 CXXCPP = @CXXCPP@
 CXXDEPMODE = @CXXDEPMODE@
@@ -116,6 +139,7 @@ CXXFLAGS = @CXXFLAGS@
 CYGPATH_W = @CYGPATH_W@
 DEFS = @DEFS@
 DEPDIR = @DEPDIR@
+DSYMUTIL = @DSYMUTIL@
 ECHO = @ECHO@
 ECHO_C = @ECHO_C@
 ECHO_N = @ECHO_N@
@@ -139,6 +163,7 @@ LIBTOOL = @LIBTOOL@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+NMEDIT = @NMEDIT@
 OBJEXT = @OBJEXT@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
@@ -151,9 +176,12 @@ RANLIB = @RANLIB@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
+SIMLIBS = @SIMLIBS@
 SPANDSP_LT_AGE = @SPANDSP_LT_AGE@
 SPANDSP_LT_CURRENT = @SPANDSP_LT_CURRENT@
 SPANDSP_LT_REVISION = @SPANDSP_LT_REVISION@
+SPANDSP_MISALIGNED_ACCESS_FAILS = @SPANDSP_MISALIGNED_ACCESS_FAILS@
+SPANDSP_USE_EXPORT_CAPABILITY = @SPANDSP_USE_EXPORT_CAPABILITY@
 SPANDSP_USE_FIXED_POINT = @SPANDSP_USE_FIXED_POINT@
 STRIP = @STRIP@
 TESTLIBS = @TESTLIBS@
@@ -161,7 +189,9 @@ VERSION = @VERSION@
 ac_ct_AR = @ac_ct_AR@
 ac_ct_CC = @ac_ct_CC@
 ac_ct_CXX = @ac_ct_CXX@
+ac_ct_DSYMUTIL = @ac_ct_DSYMUTIL@
 ac_ct_F77 = @ac_ct_F77@
+ac_ct_NMEDIT = @ac_ct_NMEDIT@
 ac_ct_RANLIB = @ac_ct_RANLIB@
 ac_ct_STRIP = @ac_ct_STRIP@
 am__fastdepCC_FALSE = @am__fastdepCC_FALSE@
@@ -202,45 +232,41 @@ sharedstatedir = @sharedstatedir@
 sysconfdir = @sysconfdir@
 target_alias = @target_alias@
 AM_CFLAGS = $(COMP_VENDOR_CFLAGS)
+AM_LDFLAGS = $(COMP_VENDOR_LDFLAGS)
 noinst_SCRIPTS = spandsp.spec
-nobase_data_DATA = spandsp/global-tones.xml spandsp/tones.dtd
 MAINTAINERCLEANFILES = Makefile.in
-EXTRA_DIST = DueDiligence \
-             spandsp.spec \
-             wrapper.xsl \
-             libspandsp.vcproj \
-             doc/libspandsp-doxygen \
-             src/float_fudge.h \
-             src/spandsp/version.h.in \
-             src/libspandsp.dsp \
-             src/libspandsp.sln \
-             src/msvc/gettimeofday.c \
-             src/msvc/inttypes.h \
-             src/msvc/tgmath.h \
-             src/msvc/unistd.h \
-             src/msvc/sys/time.h \
-             src/msvc/spandsp.def \
-             src/msvc/msvcproj.head \
-             src/msvc/msvcproj.foot \
-             src/msvc/vc8proj.head \
-             src/msvc/vc8proj.foot \
-             spandsp/global-tones.xml \
-             spandsp/tones.dtd \
+EXTRA_DIST = autogen.sh \
+             DueDiligence \
              debian/changelog \
              debian/compat \
              debian/control \
              debian/copyright \
-             debian/libspandsp3.install \
+             debian/libspandsp6.install \
              debian/libspandsp-dev.install \
              debian/libspandsp-doc.install \
              debian/rules \
-             debian/watch
+             debian/watch \
+             README.testdata \
+             spandsp.pc \
+             spandsp.spec \
+             spandsp/fax-tests.dtd \
+             spandsp/global-tones.xml \
+             spandsp/tones.dtd \
+             spandsp/tsb85.xml \
+             unpack_g722_data.sh \
+             unpack_g726_data.sh \
+             unpack_gsm0610_data.sh \
+             unpack_v56ter_data.sh \
+             wrapper.xsl
 
 @COND_DOC_TRUE@MAYBE_DOC = doc
+@COND_TESTDATA_TRUE@MAYBE_TESTDATA = test-data
+@COND_TESTS_TRUE@MAYBE_TESTDATA = test-data
 @COND_TESTS_TRUE@MAYBE_TESTS = spandsp-sim tests
-@COND_ITUTESTS_TRUE@MAYBE_ITUTESTS = itutests
-SUBDIRS = src $(MAYBE_DOC) $(MAYBE_TESTS) $(MAYBE_ITUTESTS)
-DIST_SUBDIRS = src spandsp-sim doc tests itutests
+SUBDIRS = src $(MAYBE_DOC) $(MAYBE_TESTDATA) $(MAYBE_TESTS)
+DIST_SUBDIRS = src doc test-data spandsp-sim tests
+pkgconfigdir = $(libdir)/pkgconfig
+pkgconfig_DATA = spandsp.pc
 all: all-recursive
 
 .SUFFIXES:
@@ -277,6 +303,8 @@ $(top_srcdir)/configure:  $(am__configure_deps)
 	cd $(srcdir) && $(AUTOCONF)
 $(ACLOCAL_M4):  $(am__aclocal_m4_deps)
 	cd $(srcdir) && $(ACLOCAL) $(ACLOCAL_AMFLAGS)
+spandsp.pc: $(top_builddir)/config.status $(srcdir)/spandsp.pc.in
+	cd $(top_builddir) && $(SHELL) ./config.status $@
 spandsp.spec: $(top_builddir)/config.status $(srcdir)/spandsp.spec.in
 	cd $(top_builddir) && $(SHELL) ./config.status $@
 
@@ -289,24 +317,22 @@ clean-libtool:
 distclean-libtool:
 	-rm -f libtool
 uninstall-info-am:
-install-nobase_dataDATA: $(nobase_data_DATA)
+install-pkgconfigDATA: $(pkgconfig_DATA)
 	@$(NORMAL_INSTALL)
-	test -z "$(datadir)" || $(mkdir_p) "$(DESTDIR)$(datadir)"
-	@$(am__vpath_adj_setup) \
-	list='$(nobase_data_DATA)'; for p in $$list; do \
+	test -z "$(pkgconfigdir)" || $(mkdir_p) "$(DESTDIR)$(pkgconfigdir)"
+	@list='$(pkgconfig_DATA)'; for p in $$list; do \
 	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
-	  $(am__vpath_adj) \
-	  echo " $(nobase_dataDATA_INSTALL) '$$d$$p' '$(DESTDIR)$(datadir)/$$f'"; \
-	  $(nobase_dataDATA_INSTALL) "$$d$$p" "$(DESTDIR)$(datadir)/$$f"; \
+	  f=$(am__strip_dir) \
+	  echo " $(pkgconfigDATA_INSTALL) '$$d$$p' '$(DESTDIR)$(pkgconfigdir)/$$f'"; \
+	  $(pkgconfigDATA_INSTALL) "$$d$$p" "$(DESTDIR)$(pkgconfigdir)/$$f"; \
 	done
 
-uninstall-nobase_dataDATA:
+uninstall-pkgconfigDATA:
 	@$(NORMAL_UNINSTALL)
-	@$(am__vpath_adj_setup) \
-	list='$(nobase_data_DATA)'; for p in $$list; do \
-	  $(am__vpath_adj) \
-	  echo " rm -f '$(DESTDIR)$(datadir)/$$f'"; \
-	  rm -f "$(DESTDIR)$(datadir)/$$f"; \
+	@list='$(pkgconfig_DATA)'; for p in $$list; do \
+	  f=$(am__strip_dir) \
+	  echo " rm -f '$(DESTDIR)$(pkgconfigdir)/$$f'"; \
+	  rm -f "$(DESTDIR)$(pkgconfigdir)/$$f"; \
 	done
 
 # This directory's subdirectories are mostly independent; you can cd
@@ -444,7 +470,7 @@ distclean-tags:
 distdir: $(DISTFILES)
 	$(am__remove_distdir)
 	mkdir $(distdir)
-	$(mkdir_p) $(distdir)/. $(distdir)/config $(distdir)/debian $(distdir)/doc $(distdir)/spandsp $(distdir)/src $(distdir)/src/msvc $(distdir)/src/msvc/sys $(distdir)/src/spandsp
+	$(mkdir_p) $(distdir)/. $(distdir)/config $(distdir)/debian $(distdir)/doc $(distdir)/spandsp $(distdir)/src
 	@srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`; \
 	topsrcdirstrip=`echo "$(top_srcdir)" | sed 's|.|.|g'`; \
 	list='$(DISTFILES)'; for file in $$list; do \
@@ -588,7 +614,7 @@ check: check-recursive
 all-am: Makefile $(SCRIPTS) $(DATA)
 installdirs: installdirs-recursive
 installdirs-am:
-	for dir in "$(DESTDIR)$(datadir)"; do \
+	for dir in "$(DESTDIR)$(pkgconfigdir)"; do \
 	  test -z "$$dir" || $(mkdir_p) "$$dir"; \
 	done
 install: install-recursive
@@ -636,7 +662,7 @@ info: info-recursive
 
 info-am:
 
-install-data-am: install-nobase_dataDATA
+install-data-am: install-pkgconfigDATA
 
 install-exec-am:
 
@@ -664,7 +690,7 @@ ps: ps-recursive
 
 ps-am:
 
-uninstall-am: uninstall-info-am uninstall-nobase_dataDATA
+uninstall-am: uninstall-info-am uninstall-pkgconfigDATA
 
 uninstall-info: uninstall-info-recursive
 
@@ -676,14 +702,13 @@ uninstall-info: uninstall-info-recursive
 	distclean-tags distcleancheck distdir distuninstallcheck dvi \
 	dvi-am html html-am info info-am install install-am \
 	install-data install-data-am install-exec install-exec-am \
-	install-info install-info-am install-man \
-	install-nobase_dataDATA install-strip installcheck \
-	installcheck-am installdirs installdirs-am maintainer-clean \
-	maintainer-clean-generic maintainer-clean-recursive \
-	mostlyclean mostlyclean-generic mostlyclean-libtool \
-	mostlyclean-recursive pdf pdf-am ps ps-am tags tags-recursive \
-	uninstall uninstall-am uninstall-info-am \
-	uninstall-nobase_dataDATA
+	install-info install-info-am install-man install-pkgconfigDATA \
+	install-strip installcheck installcheck-am installdirs \
+	installdirs-am maintainer-clean maintainer-clean-generic \
+	maintainer-clean-recursive mostlyclean mostlyclean-generic \
+	mostlyclean-libtool mostlyclean-recursive pdf pdf-am ps ps-am \
+	tags tags-recursive uninstall uninstall-am uninstall-info-am \
+	uninstall-pkgconfigDATA
 
 
 faq: faq.xml
@@ -699,7 +724,7 @@ rpm-build:
 	rm -f rpm/SOURCES/*
 	rm -f rpm/SPECS/*
 	rm -f rpm/SRPMS/*
-	rpm -ta --sign @PACKAGE@-@VERSION@.tar.gz
+	rpmbuild -ta --sign @PACKAGE@-@VERSION@.tar.gz
 
 bump.rpm.release: spandsp.spec
 	VERSION="x"; \

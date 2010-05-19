@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: g726_tests.c,v 1.17 2007/11/10 11:14:58 steveu Exp $
+ * $Id: g726_tests.c,v 1.33 2009/05/30 15:23:13 steveu Exp $
  */
 
 /*! \file */
@@ -40,7 +40,7 @@ The speech file should be recorded at 16 bits/sample, 8000 samples/second, and n
 
 \section g726_tests_page_sec_2 How is it used?
 To perform the tests in the G.726 specification you need to obtain the test data files from the
-specification. These are copyright material, and so cannot be distributed with spandsp.
+specification. These are copyright material, and so cannot be distributed with this test software.
 
 The files, containing test vectors, which are supplied with the G.726 specification, should be
 copied to itutests/g726 so the files are arranged in the same directory heirarchy in which they
@@ -51,16 +51,19 @@ are supplied. That is, you should have file names like
     - itutests/g726/DISK2/INPUT/NRM.A
     - itutests/g726/DISK2/INPUT/OVR.A
 
-in your spandsp source tree. The ITU tests can then be run by executing g726_tests without
+in your source tree. The ITU tests can then be run by executing g726_tests without
 any parameters.
 
 To perform a general audio quality test, g726_tests should be run with a parameter specifying
 the required bit rate for compression. The valid parameters are "-16", "-24", "-32", and "-40".
-The test file ../localtests/short_nb_voice.wav will be compressed to the specified bit rate,
+The test file ../test-data/local/short_nb_voice.wav will be compressed to the specified bit rate,
 decompressed, and the resulting audio stored in post_g726.wav.
 */
 
-#ifdef HAVE_CONFIG_H
+/* Enable the following definition to enable direct probing into the FAX structures */
+//#define WITH_SPANDSP_INTERNALS
+
+#if defined(HAVE_CONFIG_H)
 #include <config.h>
 #endif
 
@@ -70,17 +73,22 @@ decompressed, and the resulting audio stored in post_g726.wav.
 #include <unistd.h>
 #include <memory.h>
 #include <ctype.h>
-#include <audiofile.h>
+#include <sndfile.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
+#include "spandsp-sim.h"
 
 #define BLOCK_LEN           320
 #define MAX_TEST_VECTOR_LEN 40000
 
-#define IN_FILE_NAME    "../localtests/short_nb_voice.wav"
-#define OUT_FILE_NAME   "post_g726.wav"
+#define TESTDATA_DIR    "../test-data/itu/g726/"
 
-#define TESTDATA_DIR    "../itutests/g726/"
+#define IN_FILE_NAME    "../test-data/local/short_nb_voice.wav"
+#define OUT_FILE_NAME   "post_g726.wav"
 
 int16_t outdata[MAX_TEST_VECTOR_LEN];
 uint8_t adpcmdata[MAX_TEST_VECTOR_LEN];
@@ -1069,7 +1077,7 @@ static int get_test_vector(const char *file, uint8_t buf[], int max_len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int main(int argc, char *argv[])
+static void itu_compliance_tests(void)
 {
     g726_state_t enc_state;
     g726_state_t dec_state;
@@ -1078,176 +1086,86 @@ int main(int argc, char *argv[])
     int i;
     int test;
     int bits_per_code;
-    int itutests;
-    int bit_rate;
     int bad_samples;
-    AFfilehandle inhandle;
-    AFfilehandle outhandle;
-    AFfilesetup filesetup;
-    int16_t amp[1024];
-    int frames;
-    int outframes;
     int conditioning_samples;
     int samples;
     int conditioning_adpcm;
     int adpcm;
-    int packing;
-    float x;
-
-    i = 1;
-    bit_rate = 32000;
-    itutests = TRUE;
-    packing = G726_PACKING_NONE;
-    while (argc > i)
-    {
-        if (strcmp(argv[i], "-16") == 0)
-        {
-            bit_rate = 16000;
-            itutests = FALSE;
-            i++;
-        }
-        else if (strcmp(argv[i], "-24") == 0)
-        {
-            bit_rate = 24000;
-            itutests = FALSE;
-            i++;
-        }
-        else if (strcmp(argv[i], "-32") == 0)
-        {
-            bit_rate = 32000;
-            itutests = FALSE;
-            i++;
-        }
-        else if (strcmp(argv[i], "-40") == 0)
-        {
-            bit_rate = 40000;
-            itutests = FALSE;
-            i++;
-        }
-        else if (strcmp(argv[i], "-l") == 0)
-        {
-            packing = G726_PACKING_LEFT;
-            i++;
-        }
-        else if (strcmp(argv[i], "-r") == 0)
-        {
-            packing = G726_PACKING_RIGHT;
-            i++;
-        }
-        else
-        {
-            fprintf(stderr, "Unknown parameter %s specified.\n", argv[i]);
-            exit(2);
-        }
-    }
 
     len2 = 0;
     conditioning_samples = 0;
-    if (itutests)
+    for (test = 0;  itu_test_sets[test].rate;  test++)
     {
-        for (test = 0;  itu_test_sets[test].rate;  test++)
+        printf("Test %2d: '%s' + '%s'\n"
+               "      -> '%s' + '%s'\n"
+               "      -> '%s' [%d, %d, %d]\n",
+               test,
+               itu_test_sets[test].conditioning_pcm_file,
+               itu_test_sets[test].pcm_file,
+               itu_test_sets[test].conditioning_adpcm_file,
+               itu_test_sets[test].adpcm_file,
+               itu_test_sets[test].output_file,
+               itu_test_sets[test].rate,
+               itu_test_sets[test].compression_law,
+               itu_test_sets[test].decompression_law);
+        switch (itu_test_sets[test].rate)
         {
-            printf("Test %2d: '%s' + '%s'\n"
-                   "      -> '%s' + '%s'\n"
-                   "      -> '%s' [%d, %d, %d]\n",
-                   test,
-                   itu_test_sets[test].conditioning_pcm_file,
-                   itu_test_sets[test].pcm_file,
-                   itu_test_sets[test].conditioning_adpcm_file,
-                   itu_test_sets[test].adpcm_file,
-                   itu_test_sets[test].output_file,
-                   itu_test_sets[test].rate,
-                   itu_test_sets[test].compression_law,
-                   itu_test_sets[test].decompression_law);
-            switch (itu_test_sets[test].rate)
+        case 16000:
+            bits_per_code = 2;
+            break;
+        case 24000:
+            bits_per_code = 3;
+            break;
+        case 32000:
+        default:
+            bits_per_code = 4;
+            break;
+        case 40000:
+            bits_per_code = 5;
+            break;
+        }
+        if (itu_test_sets[test].compression_law != G726_ENCODING_NONE)
+        {
+            /* Test the encode side */
+            g726_init(&enc_state, itu_test_sets[test].rate, itu_test_sets[test].compression_law, G726_PACKING_NONE);
+            if (itu_test_sets[test].conditioning_pcm_file[0])
             {
-            case 16000:
-                bits_per_code = 2;
-                break;
-            case 24000:
-                bits_per_code = 3;
-                break;
-            case 32000:
-            default:
-                bits_per_code = 4;
-                break;
-            case 40000:
-                bits_per_code = 5;
-                break;
-            }
-            if (itu_test_sets[test].compression_law != G726_ENCODING_NONE)
-            {
-                /* Test the encode side */
-                g726_init(&enc_state, itu_test_sets[test].rate, itu_test_sets[test].compression_law, G726_PACKING_NONE);
-                if (itu_test_sets[test].conditioning_pcm_file[0])
-                {
-                    conditioning_samples = get_test_vector(itu_test_sets[test].conditioning_pcm_file, xlaw, MAX_TEST_VECTOR_LEN);
-                    printf("Test %d: Homing %d samples at %dbps\n", test, conditioning_samples, itu_test_sets[test].rate);
-                }
-                else
-                {
-                    conditioning_samples = 0;
-                }
-                samples = get_test_vector(itu_test_sets[test].pcm_file, xlaw + conditioning_samples, MAX_TEST_VECTOR_LEN);
-                memcpy(itudata, xlaw, samples + conditioning_samples);
-                printf("Test %d: Compressing %d samples at %dbps\n", test, samples, itu_test_sets[test].rate);
-                len2 = g726_encode(&enc_state, adpcmdata, itudata, conditioning_samples + samples);
-            }
-            /* Test the decode side */
-            g726_init(&dec_state, itu_test_sets[test].rate, itu_test_sets[test].decompression_law, G726_PACKING_NONE);
-            if (itu_test_sets[test].conditioning_adpcm_file[0])
-            {
-                conditioning_adpcm = get_test_vector(itu_test_sets[test].conditioning_adpcm_file, unpacked, MAX_TEST_VECTOR_LEN);
-                printf("Test %d: Homing %d octets at %dbps\n", test, conditioning_adpcm, itu_test_sets[test].rate);
+                conditioning_samples = get_test_vector(itu_test_sets[test].conditioning_pcm_file, xlaw, MAX_TEST_VECTOR_LEN);
+                printf("Test %d: Homing %d samples at %dbps\n", test, conditioning_samples, itu_test_sets[test].rate);
             }
             else
             {
-                conditioning_adpcm = 0;
+                conditioning_samples = 0;
             }
-            adpcm = get_test_vector(itu_test_sets[test].adpcm_file, unpacked + conditioning_adpcm, MAX_TEST_VECTOR_LEN);
-            if (itu_test_sets[test].compression_law != G726_ENCODING_NONE)
+            samples = get_test_vector(itu_test_sets[test].pcm_file, xlaw + conditioning_samples, MAX_TEST_VECTOR_LEN);
+            memcpy(itudata, xlaw, samples + conditioning_samples);
+            printf("Test %d: Compressing %d samples at %dbps\n", test, samples, itu_test_sets[test].rate);
+            len2 = g726_encode(&enc_state, adpcmdata, itudata, conditioning_samples + samples);
+        }
+        /* Test the decode side */
+        g726_init(&dec_state, itu_test_sets[test].rate, itu_test_sets[test].decompression_law, G726_PACKING_NONE);
+        if (itu_test_sets[test].conditioning_adpcm_file[0])
+        {
+            conditioning_adpcm = get_test_vector(itu_test_sets[test].conditioning_adpcm_file, unpacked, MAX_TEST_VECTOR_LEN);
+            printf("Test %d: Homing %d octets at %dbps\n", test, conditioning_adpcm, itu_test_sets[test].rate);
+        }
+        else
+        {
+            conditioning_adpcm = 0;
+        }
+        adpcm = get_test_vector(itu_test_sets[test].adpcm_file, unpacked + conditioning_adpcm, MAX_TEST_VECTOR_LEN);
+        if (itu_test_sets[test].compression_law != G726_ENCODING_NONE)
+        {
+            /* Test our compressed version against the reference compressed version */
+            printf("Test %d: Compressed data check - %d/%d octets\n", test, conditioning_adpcm + adpcm, len2);
+            if (conditioning_adpcm + adpcm == len2)
             {
-                /* Test our compressed version against the reference compressed version */
-                printf("Test %d: Compressed data check - %d/%d octets\n", test, conditioning_adpcm + adpcm, len2);
-                if (conditioning_adpcm + adpcm == len2)
+                for (bad_samples = 0, i = conditioning_samples;  i < len2;  i++)
                 {
-                    for (bad_samples = 0, i = conditioning_samples;  i < len2;  i++)
-                    {
-                        if (adpcmdata[i] != unpacked[i])
-                        {
-                            bad_samples++;
-                            printf("Test %d: Compressed mismatch %d %x %x\n", test, i, adpcmdata[i], unpacked[i]);
-                        }
-                    }
-                    if (bad_samples > 0)
-                    {
-                        printf("Test failed\n");
-                        exit(2);
-                    }
-                    printf("Test passed\n");
-                }
-                else
-                {
-                    printf("Test %d: Length mismatch - ref = %d, processed = %d\n", test, conditioning_adpcm + adpcm, len2);
-                    exit(2);
-                }
-            }
-            
-            len3 = g726_decode(&dec_state, outdata, unpacked, conditioning_adpcm + adpcm);
-
-            /* Get the output reference data */
-            samples = get_test_vector(itu_test_sets[test].output_file, xlaw, MAX_TEST_VECTOR_LEN);
-            memcpy(itu_ref, xlaw, samples);
-            /* Test our decompressed version against the reference decompressed version */
-            printf("Test %d: Decompressed data check - %d/%d samples\n", test, samples, len3 - conditioning_adpcm);
-            if (samples == len3 - conditioning_adpcm)
-            {
-                for (bad_samples = 0, i = 0;  i < len3;  i++)
-                {
-                    if (itu_ref[i] != ((uint8_t *) outdata)[i + conditioning_adpcm])
+                    if (adpcmdata[i] != unpacked[i])
                     {
                         bad_samples++;
-                        printf("Test %d: Decompressed mismatch %d %x %x\n", test, i, itu_ref[i], ((uint8_t *) outdata)[i + conditioning_adpcm]);
+                        printf("Test %d: Compressed mismatch %d %x %x\n", test, i, adpcmdata[i], unpacked[i]);
                     }
                 }
                 if (bad_samples > 0)
@@ -1259,49 +1177,103 @@ int main(int argc, char *argv[])
             }
             else
             {
-                printf("Test %d: Length mismatch - ref = %d, processed = %d\n", test, samples, len3 - conditioning_adpcm);
+                printf("Test %d: Length mismatch - ref = %d, processed = %d\n", test, conditioning_adpcm + adpcm, len2);
                 exit(2);
             }
         }
 
-        printf("Tests passed.\n");
+        len3 = g726_decode(&dec_state, outdata, unpacked, conditioning_adpcm + adpcm);
+
+        /* Get the output reference data */
+        samples = get_test_vector(itu_test_sets[test].output_file, xlaw, MAX_TEST_VECTOR_LEN);
+        memcpy(itu_ref, xlaw, samples);
+        /* Test our decompressed version against the reference decompressed version */
+        printf("Test %d: Decompressed data check - %d/%d samples\n", test, samples, len3 - conditioning_adpcm);
+        if (samples == len3 - conditioning_adpcm)
+        {
+            for (bad_samples = 0, i = 0;  i < len3;  i++)
+            {
+                if (itu_ref[i] != ((uint8_t *) outdata)[i + conditioning_adpcm])
+                {
+                    bad_samples++;
+                    printf("Test %d: Decompressed mismatch %d %x %x\n", test, i, itu_ref[i], ((uint8_t *) outdata)[i + conditioning_adpcm]);
+                }
+            }
+            if (bad_samples > 0)
+            {
+                printf("Test failed\n");
+                exit(2);
+            }
+            printf("Test passed\n");
+        }
+        else
+        {
+            printf("Test %d: Length mismatch - ref = %d, processed = %d\n", test, samples, len3 - conditioning_adpcm);
+            exit(2);
+        }
+    }
+
+    printf("Tests passed.\n");
+}
+/*- End of function --------------------------------------------------------*/
+
+int main(int argc, char *argv[])
+{
+    g726_state_t enc_state;
+    g726_state_t dec_state;
+    int opt;
+    int itutests;
+    int bit_rate;
+    SNDFILE *inhandle;
+    SNDFILE *outhandle;
+    int16_t amp[1024];
+    int frames;
+    int outframes;
+    int adpcm;
+    int packing;
+
+    bit_rate = 32000;
+    itutests = TRUE;
+    packing = G726_PACKING_NONE;
+    while ((opt = getopt(argc, argv, "b:LR")) != -1)
+    {
+        switch (opt)
+        {
+        case 'b':
+            bit_rate = atoi(optarg);
+            if (bit_rate != 16000  &&  bit_rate != 24000  &&  bit_rate != 32000  &&  bit_rate != 40000)
+            {
+                fprintf(stderr, "Invalid bit rate selected. Only 16000, 24000, 32000 and 40000 are valid.\n");
+                exit(2);
+            }
+            itutests = FALSE;
+            break;
+        case 'L':
+            packing = G726_PACKING_LEFT;
+            break;
+        case 'R':
+            packing = G726_PACKING_RIGHT;
+            break;
+        default:
+            //usage();
+            exit(2);
+        }
+    }
+
+    if (itutests)
+    {
+        itu_compliance_tests();
     }
     else
     {
-        if ((inhandle = afOpenFile(IN_FILE_NAME, "r", 0)) == AF_NULL_FILEHANDLE)
+        if ((inhandle = sf_open_telephony_read(IN_FILE_NAME, 1)) == NULL)
         {
-            printf("    Cannot open wave file '%s'\n", IN_FILE_NAME);
+            fprintf(stderr, "    Cannot open audio file '%s'\n", IN_FILE_NAME);
             exit(2);
         }
-        if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0)
+        if ((outhandle = sf_open_telephony_write(OUT_FILE_NAME, 1)) == NULL)
         {
-            printf("    Unexpected frame size in wave file '%s'\n", IN_FILE_NAME);
-            exit(2);
-        }
-        if ((x = afGetRate(inhandle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
-        {
-            printf("    Unexpected sample rate in wave file '%s'\n", IN_FILE_NAME);
-            exit(2);
-        }
-        if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0)
-        {
-            printf("    Unexpected number of channels in wave file '%s'\n", IN_FILE_NAME);
-            exit(2);
-        }
-        if ((filesetup = afNewFileSetup()) == AF_NULL_FILESETUP)
-        {
-            fprintf(stderr, "    Failed to create file setup\n");
-            exit(2);
-        }
-        afInitSampleFormat(filesetup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-        afInitRate(filesetup, AF_DEFAULT_TRACK, (float) SAMPLE_RATE);
-        afInitFileFormat(filesetup, AF_FILE_WAVE);
-        afInitChannels(filesetup, AF_DEFAULT_TRACK, 1);
-
-        outhandle = afOpenFile(OUT_FILE_NAME, "w", filesetup);
-        if (outhandle == AF_NULL_FILEHANDLE)
-        {
-            fprintf(stderr, "    Cannot create wave file '%s'\n", OUT_FILE_NAME);
+            fprintf(stderr, "    Cannot create audio file '%s'\n", OUT_FILE_NAME);
             exit(2);
         }
 
@@ -1309,23 +1281,22 @@ int main(int argc, char *argv[])
         g726_init(&enc_state, bit_rate, G726_ENCODING_LINEAR, packing);
         g726_init(&dec_state, bit_rate, G726_ENCODING_LINEAR, packing);
             
-        while ((frames = afReadFrames(inhandle, AF_DEFAULT_TRACK, amp, 159)))
+        while ((frames = sf_readf_short(inhandle, amp, 159)))
         {
             adpcm = g726_encode(&enc_state, adpcmdata, amp, frames);
             frames = g726_decode(&dec_state, amp, adpcmdata, adpcm);
-            outframes = afWriteFrames(outhandle, AF_DEFAULT_TRACK, amp, frames);
+            outframes = sf_writef_short(outhandle, amp, frames);
         }
-        if (afCloseFile(inhandle) != 0)
+        if (sf_close(inhandle) != 0)
         {
-            printf("    Cannot close wave file '%s'\n", IN_FILE_NAME);
+            printf("    Cannot close audio file '%s'\n", IN_FILE_NAME);
             exit(2);
         }
-        if (afCloseFile(outhandle) != 0)
+        if (sf_close(outhandle) != 0)
         {
-            printf("    Cannot close wave file '%s'\n", OUT_FILE_NAME);
+            printf("    Cannot close audio file '%s'\n", OUT_FILE_NAME);
             exit(2);
         }
-        afFreeFileSetup(filesetup);
         printf("'%s' transcoded to '%s' at %dbps.\n", IN_FILE_NAME, OUT_FILE_NAME, bit_rate);
     }
     return 0;

@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: bert.h,v 1.17 2007/04/08 08:16:17 steveu Exp $
+ * $Id: bert.h,v 1.23 2009/02/10 13:06:47 steveu Exp $
  */
 
 #if !defined(_SPANDSP_BERT_H_)
@@ -106,54 +106,7 @@ typedef void (*bert_report_func_t)(void *user_data, int reason, bert_results_t *
     Bit error rate tester (BERT) descriptor. This defines the working state for a
     single instance of the BERT.
 */
-typedef struct
-{
-    int pattern;
-    int pattern_class;
-    bert_report_func_t reporter;
-    void *user_data;
-    int report_frequency;
-    int limit;
-
-    uint32_t tx_reg;
-    int tx_step;
-    int tx_step_bit;
-    int tx_bits;
-    int tx_zeros;
-
-    uint32_t rx_reg;
-    uint32_t ref_reg;
-    uint32_t master_reg;
-    int rx_step;
-    int rx_step_bit;
-    int resync;
-    int rx_bits;
-    int rx_zeros;
-    int resync_len;
-    int resync_percent;
-    int resync_bad_bits;
-    int resync_cnt;
-    
-    uint32_t mask;
-    int shift;
-    int shift2;
-    int max_zeros;
-    int invert;
-    int resync_time;
-
-    int decade_ptr[9];
-    int decade_bad[9][10];
-    int step;
-    int error_rate;
-
-    int bit_error_status;
-    int report_countdown;
-
-    bert_results_t results;
-
-    /*! \brief Error and flow logging control */
-    logging_state_t logging;
-} bert_state_t;
+typedef struct bert_state_s bert_state_t;
 
 #if defined(__cplusplus)
 extern "C"
@@ -163,7 +116,7 @@ extern "C"
 /*! Return a short description of a BERT event.
     \param event The event type.
     \return A pointer to a short text string describing the event. */
-const char *bert_event_to_str(int event);
+SPAN_DECLARE(const char *) bert_event_to_str(int event);
 
 /*! Initialise a BERT context.
     \param s The BERT context.
@@ -172,30 +125,34 @@ const char *bert_event_to_str(int event);
     \param resync_len ???
     \param resync_percent The percentage of bad bits which will cause a resync.
     \return The BERT context. */
-bert_state_t *bert_init(bert_state_t *s, int limit, int pattern, int resync_len, int resync_percent);
+SPAN_DECLARE(bert_state_t *) bert_init(bert_state_t *s, int limit, int pattern, int resync_len, int resync_percent);
+
+SPAN_DECLARE(int) bert_release(bert_state_t *s);
+
+SPAN_DECLARE(int) bert_free(bert_state_t *s);
 
 /*! Get the next bit of the BERT sequence from the generator.
     \param s The BERT context.
     \return The bit. */
-int bert_get_bit(bert_state_t *s);
+SPAN_DECLARE(int) bert_get_bit(bert_state_t *s);
 
 /*! Put the next bit of the BERT sequence to the analyser.
     \param s The BERT context.
     \param bit The bit. */
-void bert_put_bit(bert_state_t *s, int bit);
+SPAN_DECLARE(void) bert_put_bit(bert_state_t *s, int bit);
 
 /*! Set the callback function for reporting the test status.
     \param s The BERT context.
     \param freq The required frequency of regular reports.
     \param reporter The callback function.
     \param user_data An opaque pointer passed to the reporter routine. */
-void bert_set_report(bert_state_t *s, int freq, bert_report_func_t reporter, void *user_data);
+SPAN_DECLARE(void) bert_set_report(bert_state_t *s, int freq, bert_report_func_t reporter, void *user_data);
 
 /*! Get the results of the BERT.
     \param s The BERT context.
     \param results The results.
     \return The size of the result structure. */
-int bert_result(bert_state_t *s, bert_results_t *results);
+SPAN_DECLARE(int) bert_result(bert_state_t *s, bert_results_t *results);
 
 #if defined(__cplusplus)
 }

@@ -133,6 +133,10 @@ SOURCE=.\complex_vector_float.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\complex_vector_int.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\crc.c
 # End Source File
 # Begin Source File
@@ -157,6 +161,10 @@ SOURCE=.\fax.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\fax_modems.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\fsk.c
 # End Source File
 # Begin Source File
@@ -165,11 +173,7 @@ SOURCE=.\g711.c
 # End Source File
 # Begin Source File
 
-SOURCE=.\g722_encode.c
-# End Source File
-# Begin Source File
-
-SOURCE=.\g722_decode.c
+SOURCE=.\g722.c
 # End Source File
 # Begin Source File
 
@@ -289,11 +293,27 @@ SOURCE=.\super_tone_tx.c
 # End Source File
 # Begin Source File
 
-SOURCE=.\t4.c
+SOURCE=.\swept_tone.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\t4_rx.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\t4_tx.c
 # End Source File
 # Begin Source File
 
 SOURCE=.\t30.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\t30_api.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\t30_logging.c
 # End Source File
 # Begin Source File
 
@@ -310,6 +330,10 @@ SOURCE=.\t38_core.c
 # Begin Source File
 
 SOURCE=.\t38_gateway.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\t38_non_ecm_buffer.c
 # End Source File
 # Begin Source File
 
@@ -338,6 +362,10 @@ SOURCE=.\v17rx.c
 # Begin Source File
 
 SOURCE=.\v17tx.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\v18.c
 # End Source File
 # Begin Source File
 
@@ -385,7 +413,7 @@ SOURCE=.\vector_int.c
 # End Source File
 # Begin Source File
 
-SOURCE=.\msvc/gettimeofday.c
+SOURCE=.\.\msvc\gettimeofday.c
 # End Source File
 # End Group
 # Begin Group "Header Files"
@@ -447,6 +475,10 @@ SOURCE=.\spandsp/complex_vector_float.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/complex_vector_int.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/dc_restore.h
 # End Source File
 # Begin Source File
@@ -463,7 +495,15 @@ SOURCE=.\spandsp/echo.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/fast_convert.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/fax.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/fax_modems.h
 # End Source File
 # Begin Source File
 
@@ -543,6 +583,10 @@ SOURCE=.\spandsp/queue.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/saturated.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/schedule.h
 # End Source File
 # Begin Source File
@@ -563,7 +607,15 @@ SOURCE=.\spandsp/super_tone_tx.h
 # End Source File
 # Begin Source File
 
-SOURCE=.\spandsp/t4.h
+SOURCE=.\spandsp/swept_tone.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t4_rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t4_tx.h
 # End Source File
 # Begin Source File
 
@@ -571,7 +623,15 @@ SOURCE=.\spandsp/t30.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/t30_api.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/t30_fcf.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t30_logging.h
 # End Source File
 # Begin Source File
 
@@ -588,6 +648,10 @@ SOURCE=.\spandsp/t38_core.h
 # Begin Source File
 
 SOURCE=.\spandsp/t38_gateway.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t38_non_ecm_buffer.h
 # End Source File
 # Begin Source File
 
@@ -620,6 +684,10 @@ SOURCE=.\spandsp/v17rx.h
 # Begin Source File
 
 SOURCE=.\spandsp/v17tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/v18.h
 # End Source File
 # Begin Source File
 
@@ -667,13 +735,233 @@ SOURCE=.\spandsp/version.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/private/adsi.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/async.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/at_interpreter.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/awgn.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/bell_r2_mf.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/bert.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/bitstream.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/dtmf.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/echo.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/fax.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/fax_modems.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/fsk.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/g711.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/g722.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/g726.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/gsm0610.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/hdlc.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/ima_adpcm.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/logging.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/lpc10.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/modem_connect_tones.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/modem_echo.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/noise.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/oki_adpcm.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/queue.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/schedule.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/sig_tone.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/silence_gen.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/super_tone_rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/super_tone_tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/swept_tone.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t30.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t30_dis_dtc_dcs_bits.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t31.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t38_core.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t38_gateway.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t38_non_ecm_buffer.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t38_terminal.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t4_rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t4_tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/time_scale.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/tone_detect.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/tone_generate.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v17rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v17tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v18.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v22bis.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v27ter_rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v27ter_tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v29rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v29tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v42.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v42bis.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/v8.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/expose.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp.h
 # End Source File
 # End Group
-
-# Begin Group "Resource Files"
-
-# PROP Default_Filter "ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe"
-# End Group
-# End Target
-# End Project
+
+# Begin Group "Resource Files"
+
+# PROP Default_Filter "ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe"
+# End Group
+# End Target
+# End Project

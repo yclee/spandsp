@@ -1,7 +1,7 @@
 /*
  * SpanDSP - a series of DSP components for telephony
  *
- * inttypes.h - a fudge for MSVC, which lacks this header
+ * unistd.h - a fudge for MSVC, which lacks this header
  *
  * Written by Steve Underwood <steveu@coppice.org>
  *
@@ -12,17 +12,20 @@
  *
  */
 
-#if !defined(_INTTYPES_H_)
-#define _INTTYPES_H_
+#if !defined(_UNISTD_H_)
+#define _UNISTD_H_
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define open _open
-#define write _write
+// Declare this so we don't have to include winsock.h, it causes numerous conflicts.
+extern int __stdcall gethostname(char * name, int namelen);
+#pragma comment(lib, "ws2_32.lib")
 
-extern int gethostname (char *name, size_t len);
+extern int getopt(int argc, char *argv[], char *opstring);
+
+extern char *optarg;
 
 #ifdef __cplusplus
 }

@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: t30.h,v 1.85 2007/11/30 12:20:35 steveu Exp $
+ * $Id: t30.h,v 1.126.4.1 2009/12/19 09:47:56 steveu Exp $
  */
 
 /*! \file */
@@ -42,16 +42,29 @@ Current features of this module include:
 
     - FAXing to and from multi-page TIFF/F files, whose images are one of the standard
       FAX sizes.
+    - V.27ter, V.29 and V.17 modes (2400bps, to 14,400bps).
     - T.4 1D (MH), T.4 2D,(MR) and T.6 (MMR) compression.
-    - Error correction (ECM)
-    - All standard resolutions and page sizes
+    - Error correction mode (ECM).
+    - All standard horizonal resolutions (R8, R16, 300dpi, 600dpi, 800dpi, 1200dpi).
+    - All standard vertical resolutions (standard, fine, superfine, 300dpi, 600dpi, 800dpi, 1200dpi).
+    - All standard page widths (A4, B4, A3).
+    - All standard page lengths (A4, B4, North American letter, North American legal, continuous).
+    - Monitoring and sending identifier strings (CSI, TSI, and CIG).
+    - Monitoring and sending sub-address strings (SUB).
+    - Monitoring and sending polling sub-addresses (SEP).
+    - Monitoring and sending polled sub-addresses (PSA).
+    - Monitoring and sending sender identifications (SID).
+    - Monitoring and sending passwords (PWD).
+    - Monitoring of non-standard facility frames (NSF, NSC, and NSS).
+    - Sending custom non-standard facility frames (NSF, NSC, and NSS).
+    - Analogue modem and T.38 operation.
 
 \section t30_page_sec_2 How does it work?
 
 Some of the following is paraphrased from some notes found a while ago on the Internet.
 I cannot remember exactly where they came from, but they are useful.
 
-The answer (CED) tone
+\subsection t30_page_sec_2a The answer (CED) tone
 
 The T.30 standard says an answering fax device must send CED (a 2100Hz tone) for
 approximately 3 seconds before sending the first handshake message. Some machines
@@ -59,16 +72,16 @@ send an 1100Hz or 1850Hz tone, and some send no tone at all. In fact, this answe
 tone is so unpredictable, it cannot really be used. It should, however, always be
 generated according to the specification.
 
-Common Timing Deviations
+\subsection t30_page_sec_2b Common Timing Deviations
 
 The T.30 spec. specifies a number of time-outs. For example, after dialing a number,
 a calling fax system should listen for a response for 35 seconds before giving up.
 These time-out periods are as follows: 
 
-    * T1 - 35+-5s: the maximum time for which two fax system will attempt to identify each other
-    * T2 - 6+-1s:  a time-out used to start the sequence for changing transmit parameters
-    * T3 - 10+-5s: a time-out used in handling operator interrupts
-    * T5 - 60+-5s: a time-out used in error correction mode
+    - T1 - 35+-5s: the maximum time for which two fax system will attempt to identify each other
+    - T2 - 6+-1s:  a time-out used to start the sequence for changing transmit parameters
+    - T3 - 10+-5s: a time-out used in handling operator interrupts
+    - T5 - 60+-5s: a time-out used in error correction mode
 
 These time-outs are sometimes misinterpreted. In addition, they are routinely
 ignored, sometimes with good reason. For example, after placing a call, the
@@ -88,8 +101,8 @@ manually overrides.
 
 All the time-outs are subject to alteration, and sometimes misuse. Good T.30
 implementations must do the right thing, and tolerate others doing the wrong thing.
- 
-Variations in the inter-carrier gap
+
+\subsection t30_page_sec_2c Variations in the inter-carrier gap
 
 T.30 specifies 75+-20ms of silence between signals using different modulation
 schemes. Examples are between the end of a DCS signal and the start of a TCF signal,
@@ -100,7 +113,7 @@ handshake signal error recovery, should a packet be corrupted on the line. Syste
 should ensure they stay within the prescribed T.30 limits, and be tolerant of others
 being out of spec.. 
 
-Other timing variations
+\subsection t30_page_sec_2d Other timing variations
 
 Testing is required to determine the ability of a fax system to handle
 variations in the duration of pauses between unacknowledged handshake message
@@ -109,38 +122,45 @@ the start of a response to that command. In order to reduce the total
 transmission time, many fax systems start sending a response message before the
 end of the command has been received. 
 
-Other deviations from the T.30 standard
+\subsection t30_page_sec_2e Other deviations from the T.30 standard
 
 There are many other commonly encountered variations between machines, including:
 
-    * frame sequence deviations
-    * preamble and flag sequence variations
-    * improper EOM usage
-    * unusual data rate fallback sequences
-    * common training pattern detection algorithms
-    * image transmission deviations
-    * use of the talker echo protect tone
-    * image padding and short lines
-    * RTP/RTN handshake message usage
-    * long duration lines
-    * nonstandard disconnect sequences
-    * DCN usage
+    - frame sequence deviations
+    - preamble and flag sequence variations
+    - improper EOM usage
+    - unusual data rate fallback sequences
+    - common training pattern detection algorithms
+    - image transmission deviations
+    - use of the talker echo protect tone
+    - image padding and short lines
+    - RTP/RTN handshake message usage
+    - long duration lines
+    - nonstandard disconnect sequences
+    - DCN usage
 */
 
+/*! The maximum length of a DIS, DTC or DCS frame */
 #define T30_MAX_DIS_DTC_DCS_LEN     22
-#define T30_MAX_IDENT_LEN           21
-#define T30_MAX_LOCAL_NSF_LEN       100
+/*! The maximum length of the body of an ident string */
+#define T30_MAX_IDENT_LEN           20
+/*! The maximum length of the user string to insert in page headers */
+#define T30_MAX_PAGE_HEADER_INFO    50
 
 typedef struct t30_state_s t30_state_t;
 
 /*!
-    T.30 phase B callback handler.
+    T.30 phase B callback handler. This handler can be used to process addition
+    information available in some FAX calls, such as passwords. The callback handler
+    can access whatever additional information might have been received, using
+    t30_get_received_info().
     \brief T.30 phase B callback handler.
     \param s The T.30 context.
     \param user_data An opaque pointer.
     \param result The phase B event code.
+    \return The new status. Normally, T30_ERR_OK is returned.
 */
-typedef void (t30_phase_b_handler_t)(t30_state_t *s, void *user_data, int result);
+typedef int (t30_phase_b_handler_t)(t30_state_t *s, void *user_data, int result);
 
 /*!
     T.30 phase D callback handler.
@@ -148,8 +168,9 @@ typedef void (t30_phase_b_handler_t)(t30_state_t *s, void *user_data, int result
     \param s The T.30 context.
     \param user_data An opaque pointer.
     \param result The phase D event code.
+    \return The new status. Normally, T30_ERR_OK is returned.
 */
-typedef void (t30_phase_d_handler_t)(t30_state_t *s, void *user_data, int result);
+typedef int (t30_phase_d_handler_t)(t30_state_t *s, void *user_data, int result);
 
 /*!
     T.30 phase E callback handler.
@@ -159,6 +180,21 @@ typedef void (t30_phase_d_handler_t)(t30_state_t *s, void *user_data, int result
     \param completion_code The phase E completion code.
 */
 typedef void (t30_phase_e_handler_t)(t30_state_t *s, void *user_data, int completion_code);
+
+/*!
+    T.30 real time frame handler.
+    \brief T.30 real time frame handler.
+    \param s The T.30 context.
+    \param user_data An opaque pointer.
+    \param direction TRUE for incoming, FALSE for outgoing.
+    \param msg The HDLC message.
+    \param len The length of the message.
+*/
+typedef void (t30_real_time_frame_handler_t)(t30_state_t *s,
+                                             void *user_data,
+                                             int direction,
+                                             const uint8_t msg[],
+                                             int len);
 
 /*!
     T.30 document handler.
@@ -174,10 +210,11 @@ typedef int (t30_document_handler_t)(t30_state_t *s, void *user_data, int status
     \brief T.30 set a receive or transmit type handler.
     \param user_data An opaque pointer.
     \param type The modem, tone or silence to be sent or received.
+    \param bit_rate The bit rate of the modem to be sent or received.
     \param short_train TRUE if the short training sequence should be used (where one exists).
     \param use_hdlc FALSE for bit stream, TRUE for HDLC framing.
 */
-typedef void (t30_set_handler_t)(void *user_data, int type, int short_train, int use_hdlc);
+typedef void (t30_set_handler_t)(void *user_data, int type, int bit_rate, int short_train, int use_hdlc);
 
 /*!
     T.30 send HDLC handler.
@@ -186,78 +223,93 @@ typedef void (t30_set_handler_t)(void *user_data, int type, int short_train, int
     \param msg The HDLC message.
     \param len The length of the message.
 */
-typedef void (t30_send_hdlc_handler_t)(void *user_data, const uint8_t *msg, int len);
+typedef void (t30_send_hdlc_handler_t)(void *user_data, const uint8_t msg[], int len);
 
 /*!
     T.30 protocol completion codes, at phase E.
 */
 enum
 {
-    T30_ERR_OK = 0,         /*! OK */
+    T30_ERR_OK = 0,             /*! OK */
 
     /* Link problems */
-    T30_ERR_CEDTONE,        /*! The CED tone exceeded 5s */
-    T30_ERR_T0_EXPIRED,     /*! Timed out waiting for initial communication */
-    T30_ERR_T1_EXPIRED,     /*! Timed out waiting for the first message */
-    T30_ERR_T3_EXPIRED,     /*! Timed out waiting for procedural interrupt */
-    T30_ERR_HDLC_CARRIER,   /*! The HDLC carrier did not stop in a timely manner */
-    T30_ERR_CANNOT_TRAIN,   /*! Failed to train with any of the compatible modems */
-    T30_ERR_OPERINTFAIL,    /*! Operator intervention failed */
-    T30_ERR_INCOMPATIBLE,   /*! Far end is not compatible */
-    T30_ERR_RX_INCAPABLE,   /*! Far end is not able to receive */
-    T30_ERR_TX_INCAPABLE,   /*! Far end is not able to transmit */
-    T30_ERR_NORESSUPPORT,   /*! Far end cannot receive at the resolution of the image */
-    T30_ERR_NOSIZESUPPORT,  /*! Far end cannot receive at the size of image */
-    T30_ERR_UNEXPECTED,     /*! Unexpected message received */
-
-    /* TIFF file problems */
-    T30_ERR_FILEERROR,      /*! TIFF/F file cannot be opened */
-    T30_ERR_NOPAGE,         /*! TIFF/F page not found */
-    T30_ERR_BADTIFF,        /*! TIFF/F format is not compatible */
+    T30_ERR_CEDTONE,            /*! The CED tone exceeded 5s */
+    T30_ERR_T0_EXPIRED,         /*! Timed out waiting for initial communication */
+    T30_ERR_T1_EXPIRED,         /*! Timed out waiting for the first message */
+    T30_ERR_T3_EXPIRED,         /*! Timed out waiting for procedural interrupt */
+    T30_ERR_HDLC_CARRIER,       /*! The HDLC carrier did not stop in a timely manner */
+    T30_ERR_CANNOT_TRAIN,       /*! Failed to train with any of the compatible modems */
+    T30_ERR_OPER_INT_FAIL,      /*! Operator intervention failed */
+    T30_ERR_INCOMPATIBLE,       /*! Far end is not compatible */
+    T30_ERR_RX_INCAPABLE,       /*! Far end is not able to receive */
+    T30_ERR_TX_INCAPABLE,       /*! Far end is not able to transmit */
+    T30_ERR_NORESSUPPORT,       /*! Far end cannot receive at the resolution of the image */
+    T30_ERR_NOSIZESUPPORT,      /*! Far end cannot receive at the size of image */
+    T30_ERR_UNEXPECTED,         /*! Unexpected message received */
 
     /* Phase E status values returned to a transmitter */
-    T30_ERR_BADDCSTX,       /*! Received bad response to DCS or training */
-    T30_ERR_BADPGTX,        /*! Received a DCN from remote after sending a page */
-    T30_ERR_ECMPHDTX,       /*! Invalid ECM response received from receiver */
-    T30_ERR_T5_EXPIRED,     /*! Timed out waiting for receiver ready (ECM mode) */
-    T30_ERR_GOTDCNTX,       /*! Received a DCN while waiting for a DIS */
-    T30_ERR_INVALRSPTX,     /*! Invalid response after sending a page */
-    T30_ERR_NODISTX,        /*! Received other than DIS while waiting for DIS */
-    T30_ERR_PHBDEADTX,      /*! Received no response to DCS, training or TCF */
-    T30_ERR_PHDDEADTX,      /*! No response after sending a page */
+    T30_ERR_TX_BADDCS,          /*! Received bad response to DCS or training */
+    T30_ERR_TX_BADPG,           /*! Received a DCN from remote after sending a page */
+    T30_ERR_TX_ECMPHD,          /*! Invalid ECM response received from receiver */
+    T30_ERR_TX_GOTDCN,          /*! Received a DCN while waiting for a DIS */
+    T30_ERR_TX_INVALRSP,        /*! Invalid response after sending a page */
+    T30_ERR_TX_NODIS,           /*! Received other than DIS while waiting for DIS */
+    T30_ERR_TX_PHBDEAD,         /*! Received no response to DCS, training or TCF */
+    T30_ERR_TX_PHDDEAD,         /*! No response after sending a page */
+    T30_ERR_TX_T5EXP,           /*! Timed out waiting for receiver ready (ECM mode) */
 
     /* Phase E status values returned to a receiver */
-    T30_ERR_ECMPHDRX,       /*! Invalid ECM response received from transmitter */
-    T30_ERR_GOTDCSRX,       /*! DCS received while waiting for DTC */
-    T30_ERR_INVALCMDRX,     /*! Unexpected command after page received */
-    T30_ERR_NOCARRIERRX,    /*! Carrier lost during fax receive */
-    T30_ERR_NOEOLRX,        /*! Timed out while waiting for EOL (end Of line) */
-    T30_ERR_NOFAXRX,        /*! Timed out while waiting for first line */
-    T30_ERR_T2EXPDCNRX,     /*! Timer T2 expired while waiting for DCN */
-    T30_ERR_T2EXPDRX,       /*! Timer T2 expired while waiting for phase D */
-    T30_ERR_T2EXPFAXRX,     /*! Timer T2 expired while waiting for fax page */
-    T30_ERR_T2EXPMPSRX,     /*! Timer T2 expired while waiting for next fax page */
-    T30_ERR_T2EXPRRRX,      /*! Timer T2 expired while waiting for RR command */
-    T30_ERR_T2EXPRX,        /*! Timer T2 expired while waiting for NSS, DCS or MCF */
-    T30_ERR_DCNWHYRX,       /*! Unexpected DCN while waiting for DCS or DIS */
-    T30_ERR_DCNDATARX,      /*! Unexpected DCN while waiting for image data */
-    T30_ERR_DCNFAXRX,       /*! Unexpected DCN while waiting for EOM, EOP or MPS */
-    T30_ERR_DCNPHDRX,       /*! Unexpected DCN after EOM or MPS sequence */
-    T30_ERR_DCNRRDRX,       /*! Unexpected DCN after RR/RNR sequence */
-    T30_ERR_DCNNORTNRX,     /*! Unexpected DCN after requested retransmission */
+    T30_ERR_RX_ECMPHD,          /*! Invalid ECM response received from transmitter */
+    T30_ERR_RX_GOTDCS,          /*! DCS received while waiting for DTC */
+    T30_ERR_RX_INVALCMD,        /*! Unexpected command after page received */
+    T30_ERR_RX_NOCARRIER,       /*! Carrier lost during fax receive */
+    T30_ERR_RX_NOEOL,           /*! Timed out while waiting for EOL (end Of line) */
+    T30_ERR_RX_NOFAX,           /*! Timed out while waiting for first line */
+    T30_ERR_RX_T2EXPDCN,        /*! Timer T2 expired while waiting for DCN */
+    T30_ERR_RX_T2EXPD,          /*! Timer T2 expired while waiting for phase D */
+    T30_ERR_RX_T2EXPFAX,        /*! Timer T2 expired while waiting for fax page */
+    T30_ERR_RX_T2EXPMPS,        /*! Timer T2 expired while waiting for next fax page */
+    T30_ERR_RX_T2EXPRR,         /*! Timer T2 expired while waiting for RR command */
+    T30_ERR_RX_T2EXP,           /*! Timer T2 expired while waiting for NSS, DCS or MCF */
+    T30_ERR_RX_DCNWHY,          /*! Unexpected DCN while waiting for DCS or DIS */
+    T30_ERR_RX_DCNDATA,         /*! Unexpected DCN while waiting for image data */
+    T30_ERR_RX_DCNFAX,          /*! Unexpected DCN while waiting for EOM, EOP or MPS */
+    T30_ERR_RX_DCNPHD,          /*! Unexpected DCN after EOM or MPS sequence */
+    T30_ERR_RX_DCNRRD,          /*! Unexpected DCN after RR/RNR sequence */
+    T30_ERR_RX_DCNNORTN,        /*! Unexpected DCN after requested retransmission */
 
-    T30_ERR_BADPAGE,        /*! TIFF/F page number tag missing */
-    T30_ERR_BADTAG,         /*! Incorrect values for TIFF/F tags */
-    T30_ERR_BADTIFFHDR,     /*! Bad TIFF/F header - incorrect values in fields */
-    T30_ERR_NODATA,         /*! Data requested is not available (NSF, DIS, DCS) */
-    T30_ERR_NOMEM,          /*! Cannot allocate memory for more pages */
-    T30_ERR_NOPOLL,         /*! Poll not accepted */
-    T30_ERR_RETRYDCN,       /*! Disconnected after permitted retries */
-    T30_ERR_CALLDROPPED     /*! The call dropped prematurely */
+    /* TIFF file problems */
+    T30_ERR_FILEERROR,          /*! TIFF/F file cannot be opened */
+    T30_ERR_NOPAGE,             /*! TIFF/F page not found */
+    T30_ERR_BADTIFF,            /*! TIFF/F format is not compatible */
+    T30_ERR_BADPAGE,            /*! TIFF/F page number tag missing */
+    T30_ERR_BADTAG,             /*! Incorrect values for TIFF/F tags */
+    T30_ERR_BADTIFFHDR,         /*! Bad TIFF/F header - incorrect values in fields */
+    T30_ERR_NOMEM,              /*! Cannot allocate memory for more pages */
+    
+    /* General problems */
+    T30_ERR_RETRYDCN,           /*! Disconnected after permitted retries */
+    T30_ERR_CALLDROPPED,        /*! The call dropped prematurely */
+    
+    /* Feature negotiation issues */
+    T30_ERR_NOPOLL,             /*! Poll not accepted */
+    T30_ERR_IDENT_UNACCEPTABLE, /*! Far end's ident is not acceptable */
+    T30_ERR_SUB_UNACCEPTABLE,   /*! Far end's sub-address is not acceptable */
+    T30_ERR_SEP_UNACCEPTABLE,   /*! Far end's selective polling address is not acceptable */
+    T30_ERR_PSA_UNACCEPTABLE,   /*! Far end's polled sub-address is not acceptable */
+    T30_ERR_SID_UNACCEPTABLE,   /*! Far end's sender identification is not acceptable */
+    T30_ERR_PWD_UNACCEPTABLE,   /*! Far end's password is not acceptable */
+    T30_ERR_TSA_UNACCEPTABLE,   /*! Far end's transmitting subscriber internet address is not acceptable */
+    T30_ERR_IRA_UNACCEPTABLE,   /*! Far end's internet routing address is not acceptable */
+    T30_ERR_CIA_UNACCEPTABLE,   /*! Far end's calling subscriber internet address is not acceptable */
+    T30_ERR_ISP_UNACCEPTABLE,   /*! Far end's internet selective polling address is not acceptable */
+    T30_ERR_CSA_UNACCEPTABLE    /*! Far end's called subscriber internet address is not acceptable */
 };
 
 /*!
     I/O modes for the T.30 protocol.
+    These are allocated such that the lower 4 bits represents the variant of the modem - e.g. the
+    particular bit rate selected.
 */
 enum
 {
@@ -266,65 +318,92 @@ enum
     T30_MODEM_CED,
     T30_MODEM_CNG,
     T30_MODEM_V21,
-    T30_MODEM_V27TER_2400,
-    T30_MODEM_V27TER_4800,
-    T30_MODEM_V29_7200,
-    T30_MODEM_V29_9600,
-    T30_MODEM_V17_7200,
-    T30_MODEM_V17_9600,
-    T30_MODEM_V17_12000,
-    T30_MODEM_V17_14400,
+    T30_MODEM_V27TER,
+    T30_MODEM_V29,
+    T30_MODEM_V17,
     T30_MODEM_DONE
 };
 
 enum
 {
     T30_FRONT_END_SEND_STEP_COMPLETE = 0,
-    T30_FRONT_END_SEND_COMPLETE,
     /*! The current receive has completed. This is only needed to report an
         unexpected end of the receive operation, as might happen with T.38
         dying. */
     T30_FRONT_END_RECEIVE_COMPLETE,
     T30_FRONT_END_SIGNAL_PRESENT,
-    T30_FRONT_END_SIGNAL_ABSENT
+    T30_FRONT_END_SIGNAL_ABSENT,
+    T30_FRONT_END_CED_PRESENT,
+    T30_FRONT_END_CNG_PRESENT
 };
 
 enum
 {
+    /*! Support the V.27ter modem (2400, and 4800bps) for image transfer. */
     T30_SUPPORT_V27TER = 0x01,
+    /*! Support the V.29 modem (9600, and 7200bps) for image transfer. */
     T30_SUPPORT_V29 = 0x02,
+    /*! Support the V.17 modem (14400, 12000, 9600 and 7200bps) for image transfer. */
     T30_SUPPORT_V17 = 0x04,
+    /*! Support the V.34 modem (up to 33,600bps) for image transfer. */
     T30_SUPPORT_V34 = 0x08,
-    T30_SUPPORT_IAF = 0x10,
+    /*! Support the Internet aware FAX mode (no bit rate limit) for image transfer. */
+    T30_SUPPORT_IAF = 0x10
 };
 
 enum
 {
+    /*! No compression */
     T30_SUPPORT_NO_COMPRESSION = 0x01,
+    /*! T.1 1D compression */
     T30_SUPPORT_T4_1D_COMPRESSION = 0x02,
+    /*! T.4 2D compression */
     T30_SUPPORT_T4_2D_COMPRESSION = 0x04,
+    /*! T.6 2D compression */
     T30_SUPPORT_T6_COMPRESSION = 0x08,
-    T30_SUPPORT_T85_COMPRESSION = 0x10,     /* Monochrome JBIG */
-    T30_SUPPORT_T43_COMPRESSION = 0x20,     /* Colour JBIG */
-    T30_SUPPORT_T45_COMPRESSION = 0x40      /* Run length colour compression */
+    /*! T.85 monochrome JBIG compression */
+    T30_SUPPORT_T85_COMPRESSION = 0x10,
+    /*! T.43 colour JBIG compression */
+    T30_SUPPORT_T43_COMPRESSION = 0x20,
+    /*! T.45 run length colour compression */
+    T30_SUPPORT_T45_COMPRESSION = 0x40,
+    /*! T.81 + T.30 Annex E colour JPEG compression */
+    T30_SUPPORT_T81_COMPRESSION = 0x80,
+    /*! T.81 + T.30 Annex K colour sYCC-JPEG compression */
+    T30_SUPPORT_SYCC_T81_COMPRESSION = 0x100,
+    /*! T.88 monochrome JBIG2 compression */
+    T30_SUPPORT_T88_COMPRESSION = 0x200
 };
 
 enum
 {
+    /*! Support standard FAX Y-resolution 98/100dpi */
     T30_SUPPORT_STANDARD_RESOLUTION = 0x01,
+    /*! Support fine FAX Y-resolution 196/200dpi */
     T30_SUPPORT_FINE_RESOLUTION = 0x02,
+    /*! Support super-fine FAX Y-resolution 392/400dpi */
     T30_SUPPORT_SUPERFINE_RESOLUTION = 0x04,
 
+    /*! Support half FAX X-resolution 100/102dpi */
     T30_SUPPORT_R4_RESOLUTION = 0x10000,
+    /*! Support standard FAX X-resolution 200/204dpi */
     T30_SUPPORT_R8_RESOLUTION = 0x20000,
+    /*! Support double FAX X-resolution 400dpi */
     T30_SUPPORT_R16_RESOLUTION = 0x40000,
 
+    /*! Support 300dpi x 300 dpi */
     T30_SUPPORT_300_300_RESOLUTION = 0x100000,
+    /*! Support 400dpi x 400 dpi */
     T30_SUPPORT_400_400_RESOLUTION = 0x200000,
+    /*! Support 600dpi x 600 dpi */
     T30_SUPPORT_600_600_RESOLUTION = 0x400000,
+    /*! Support 1200dpi x 1200 dpi */
     T30_SUPPORT_1200_1200_RESOLUTION = 0x800000,
+    /*! Support 300dpi x 600 dpi */
     T30_SUPPORT_300_600_RESOLUTION = 0x1000000,
+    /*! Support 400dpi x 800 dpi */
     T30_SUPPORT_400_800_RESOLUTION = 0x2000000,
+    /*! Support 600dpi x 1200 dpi */
     T30_SUPPORT_600_1200_RESOLUTION = 0x4000000
 };
 
@@ -343,8 +422,30 @@ enum
 
 enum
 {
-    T30_SUPPORT_SEP = 0x01,
-    T30_SUPPORT_PSA = 0x02
+    /*! Enable support of identification, through the SID and/or PWD frames. */
+    T30_SUPPORT_IDENTIFICATION = 0x01,
+    /*! Enable support of selective polling, through the SEP frame. */
+    T30_SUPPORT_SELECTIVE_POLLING = 0x02,
+    /*! Enable support of polling sub-addressing, through the PSA frame. */
+    T30_SUPPORT_POLLED_SUB_ADDRESSING = 0x04,
+    /*! Enable support of multiple selective polling, through repeated used of the SEP and PSA frames. */
+    T30_SUPPORT_MULTIPLE_SELECTIVE_POLLING = 0x08,
+    /*! Enable support of sub-addressing, through the SUB frame. */
+    T30_SUPPORT_SUB_ADDRESSING = 0x10,
+    /*! Enable support of transmitting subscriber internet address, through the TSA frame. */
+    T30_SUPPORT_TRANSMITTING_SUBSCRIBER_INTERNET_ADDRESS = 0x20,
+    /*! Enable support of internet routing address, through the IRA frame. */
+    T30_SUPPORT_INTERNET_ROUTING_ADDRESS = 0x40,
+    /*! Enable support of calling subscriber internet address, through the CIA frame. */
+    T30_SUPPORT_CALLING_SUBSCRIBER_INTERNET_ADDRESS = 0x80,
+    /*! Enable support of internet selective polling address, through the ISP frame. */
+    T30_SUPPORT_INTERNET_SELECTIVE_POLLING_ADDRESS = 0x100,
+    /*! Enable support of called subscriber internet address, through the CSA frame. */
+    T30_SUPPORT_CALLED_SUBSCRIBER_INTERNET_ADDRESS = 0x200,
+    /*! Enable support of the field not valid (FNV) frame. */
+    T30_SUPPORT_FIELD_NOT_VALID = 0x400,
+    /*! Enable support of the command repeat (CRP) frame. */
+    T30_SUPPORT_COMMAND_REPEAT = 0x800
 };
 
 enum
@@ -362,199 +463,56 @@ enum
         them. */
     T30_IAF_MODE_NO_FILL_BITS = 0x20,
     /*! No indicators means do not send indicator messages when using T.38. */
-    T30_IAF_MODE_NO_INDICATORS = 0x40
+    T30_IAF_MODE_NO_INDICATORS = 0x40,
+    /*! Use relaxed timers for T.38. This is appropriate when using TCP/TPKT for T.38,
+        as there is no point in anything but a long backstop timeout in such a mode. */
+    T30_IAF_MODE_RELAXED_TIMERS = 0x80
 };
 
-/*!
-    T.30 FAX channel descriptor. This defines the state of a single working
-    instance of a T.30 FAX channel.
-*/
-struct t30_state_s
+typedef struct
 {
-    /* This must be kept the first thing in the structure, so it can be pointed
-       to reliably as the structures change over time. */
-    t4_state_t t4;
-
-    /*! \brief TRUE if behaving as the calling party */
-    int calling_party;
-    /*! \brief If >= 0 this is a minimum number of bits to force in non-ECM rows, regardless
-        of the negotiated minimum row time. */
-    int forced_min_non_ecm_row_bits;
-    
-    /*! \brief The received DCS, formatted as an ASCII string, for inclusion
-               in the TIFF file. */
-    char rx_dcs_string[T30_MAX_DIS_DTC_DCS_LEN*3 + 1];
-    /*! \brief The local identifier string. */
-    char local_ident[T30_MAX_IDENT_LEN];
-    /*! \brief The identifier string supplied by the remote FAX machine. */
-    char far_ident[T30_MAX_IDENT_LEN];
-    /*! \brief The sub-address string to be sent to the remote FAX machine. */
-    char local_sub_address[T30_MAX_IDENT_LEN];
-    /*! \brief The sub-address string supplied by the remote FAX machine. */
-    char far_sub_address[T30_MAX_IDENT_LEN];
-    /*! \brief The selective polling sub-address supplied by the remote FAX machine. */
-    char sep_address[T30_MAX_IDENT_LEN];
-    /*! \brief The polled sub-address supplied by the remote FAX machine. */
-    char psa_address[T30_MAX_IDENT_LEN];
-    /*! \brief A password to be associated with the T.30 context. */
-    char local_password[T30_MAX_IDENT_LEN];
-    /*! \brief A password expected from the far end. */
-    char far_password[T30_MAX_IDENT_LEN];
-    /*! \brief The text which will be used in FAX page header. No text results
-               in no header line. */
-    char header_info[50 + 1];
-    /*! \brief The country of origin of the remote machine, if known, else NULL. */
-    const char *country;
-    /*! \brief The vendor of the remote machine, if known, else NULL. */
-    const char *vendor;
-    /*! \brief The model of the remote machine, if known, else NULL. */
-    const char *model;
-    uint8_t local_nsf[T30_MAX_LOCAL_NSF_LEN];
-    int local_nsf_len;
-
-    /*! \brief A pointer to a callback routine to be called when phase B events
-        occur. */
-    t30_phase_b_handler_t *phase_b_handler;
-    /*! \brief An opaque pointer supplied in event B callbacks. */
-    void *phase_b_user_data;
-    /*! \brief A pointer to a callback routine to be called when phase D events
-        occur. */
-    t30_phase_d_handler_t *phase_d_handler;
-    /*! \brief An opaque pointer supplied in event D callbacks. */
-    void *phase_d_user_data;
-    /*! \brief A pointer to a callback routine to be called when phase E events
-        occur. */
-    t30_phase_e_handler_t *phase_e_handler;
-    /*! \brief An opaque pointer supplied in event E callbacks. */
-    void *phase_e_user_data;
-
-    /*! \brief A pointer to a callback routine to be called when document events
-        (e.g. end of transmitted document) occur. */
-    t30_document_handler_t *document_handler;
-    /*! \brief An opaque pointer supplied in document callbacks. */
-    void *document_user_data;
-
-    t30_set_handler_t *set_rx_type_handler;
-    void *set_rx_type_user_data;
-    t30_set_handler_t *set_tx_type_handler;
-    void *set_tx_type_user_data;
-
-    t30_send_hdlc_handler_t *send_hdlc_handler;
-    void *send_hdlc_user_data;
-   
-    int phase;
-    int next_phase;
-    int state;
-    int step;
-
-    uint8_t dcs_frame[T30_MAX_DIS_DTC_DCS_LEN];
-    int dcs_len;
-    uint8_t dis_dtc_frame[T30_MAX_DIS_DTC_DCS_LEN];
-    int dis_dtc_len;
-    /*! \brief TRUE if a valid DIS has been received from the far end. */
-    int dis_received;
-    /*! \brief TRUE if a valid passwrod has been received from the far end. */
-    int far_password_ok;
-
-    /*! \brief A flag to indicate a message is in progress. */
-    int in_message;
-
-    /*! \brief TRUE if the short training sequence should be used. */
-    int short_train;
-
-    /*! \brief A count of the number of bits in the trainability test. */
-    int training_test_bits;
-    int training_current_zeros;
-    int training_most_zeros;
-
-    /*! \brief The current fallback step for the fast message transfer modem. */
-    int current_fallback;
-    /*! \brief The subset of supported modems allowed at the current time, allowing for negotiation. */
-    int current_permitted_modems;
-    /*! \brief TRUE if a carrier is present. Otherwise FALSE. */
-    int rx_signal_present;
-    /*! \brief TRUE if a modem has trained correctly. */
-    int rx_trained;
-    int current_rx_type;
-    int current_tx_type;
-
-    /*! \brief T0 is the answer timeout when calling another FAX machine.
-        Placing calls is handled outside the FAX processing, but this timeout keeps
-        running until V.21 modulation is sent or received.
-        T1 is the remote terminal identification timeout (in audio samples). */
-    int timer_t0_t1;
-    /*! \brief T2 is the HDLC command timeout.
-               T4 is the HDLC response timeout (in audio samples). */
-    int timer_t2_t4;
-    /*! \brief TRUE if the T2/T4 timer is actually timing T4 */
-    int timer_is_t4;
-    /*! \brief Procedural interrupt timeout (in audio samples). */
-    int timer_t3;
-    /*! \brief This is only used in error correcting mode. */
-    int timer_t5;
-    /*! \brief This is only used in full duplex (e.g. ISDN) modes. */
-    int timer_t6;
-    /*! \brief This is only used in full duplex (e.g. ISDN) modes. */
-    int timer_t7;
-    /*! \brief This is only used in full duplex (e.g. ISDN) modes. */
-    int timer_t8;
-
-    int far_end_detected;
-
-    int local_interrupt_pending;
-    int crp_enabled;
-    int line_encoding;
-    int output_encoding;
-    uint8_t min_scan_time_code;
-    int x_resolution;
-    int y_resolution;
-    t4_image_width_t image_width;
-    int retries;
-    /*! \brief TRUE if error correcting mode is used. */
-    int error_correcting_mode;
-    int ppr_count;
-    int receiver_not_ready_count;
-    int octets_per_ecm_frame;
-    uint8_t ecm_data[256][260];
-    int16_t ecm_len[256];
-    uint8_t ecm_frame_map[3 + 32];
-    
-    /*! \brief The current page number in ECM mode */
-    int ecm_page;
-
-    /*! \brief The current block number in ECM mode */
-    int ecm_block;
-    
-    /*! \brief The number of frames in the current block number in ECM mode */
-    int ecm_frames;
-
-    /*! \brief The number of frames in the current burst of image transmission in ECM mode */
-    int ecm_frames_this_burst;
-    int ecm_current_frame;
-    int ecm_at_page_end;
-    int next_tx_step;
-    int next_rx_step;
-    char rx_file[256];
-    int rx_stop_page;
-    char tx_file[256];
-    int tx_start_page;
-    int tx_stop_page;
-    int current_status;
-    int iaf;
-    int supported_modems;
-    int supported_compressions;
-    int supported_resolutions;
-    int supported_image_sizes;
-    int supported_polling_features;
-    int support_fnv;
-    int ecm_allowed;
-    
-    int last_pps_fcf2;
-    int ecm_first_bad_frame;
-
-    /*! \brief Error and flow logging control */
-    logging_state_t logging;
-};
+    /*! \brief The identifier string (CSI, TSI, CIG). */
+    char ident[T30_MAX_IDENT_LEN + 1];
+    /*! \brief The sub-address string (SUB). */
+    char sub_address[T30_MAX_IDENT_LEN + 1];
+    /*! \brief The selective polling sub-address (SEP). */
+    char selective_polling_address[T30_MAX_IDENT_LEN + 1];
+    /*! \brief The polled sub-address (PSA). */
+    char polled_sub_address[T30_MAX_IDENT_LEN + 1];
+    /*! \brief The sender identification (SID). */
+    char sender_ident[T30_MAX_IDENT_LEN + 1];
+    /*! \brief The password (PWD). */
+    char password[T30_MAX_IDENT_LEN + 1];
+    /*! \brief Non-standard facilities (NSF). */
+    uint8_t *nsf;
+    size_t nsf_len;
+    /*! \brief Non-standard facilities command (NSC). */
+    uint8_t *nsc;
+    size_t nsc_len;
+    /*! \brief Non-standard facilities set-up (NSS). */
+    uint8_t *nss;
+    size_t nss_len;
+    /*! \brief Transmitting subscriber internet address (TSA). */
+    int tsa_type;
+    char *tsa;
+    size_t tsa_len;
+    /*! \brief Internet routing address (IRA). */
+    int ira_type;
+    char *ira;
+    size_t ira_len;
+    /*! \brief Calling subscriber internet address (CIA). */
+    int cia_type;
+    char *cia;
+    size_t cia_len;
+    /*! \brief Internet selective polling address (ISP). */
+    int isp_type;
+    char *isp;
+    size_t isp_len;
+    /*! \brief Called subscriber internet address (CSA). */
+    int csa_type;
+    char *csa;
+    size_t csa_len;
+} t30_exchanged_info_t;
 
 typedef struct
 {
@@ -562,26 +520,30 @@ typedef struct
     int bit_rate;
     /*! \brief TRUE if error correcting mode is used. */
     int error_correcting_mode;
-    /*! \brief The number of pages transferred so far. */
-    int pages_transferred;
+    /*! \brief The number of pages sent so far. */
+    int pages_tx;
+    /*! \brief The number of pages received so far. */
+    int pages_rx;
     /*! \brief The number of pages in the file (<0 if not known). */
     int pages_in_file;
+    /*! \brief The horizontal column-to-column resolution of the most recent page, in pixels per metre */
+    int x_resolution;
+    /*! \brief The vertical row-to-row resolution of the most recent page, in pixels per metre */
+    int y_resolution;
     /*! \brief The number of horizontal pixels in the most recent page. */
     int width;
     /*! \brief The number of vertical pixels in the most recent page. */
     int length;
+    /*! \brief The size of the image, in bytes */
+    int image_size;
+    /*! \brief The type of compression used between the FAX machines */
+    int encoding;
     /*! \brief The number of bad pixel rows in the most recent page. */
     int bad_rows;
     /*! \brief The largest number of bad pixel rows in a block in the most recent page. */
     int longest_bad_row_run;
-    /*! \brief The horizontal column-to-column resolution of the page in pixels per metre */
-    int x_resolution;
-    /*! \brief The vertical row-to-row resolution of the page in pixels per metre */
-    int y_resolution;
-    /*! \brief The type of compression used between the FAX machines */
-    int encoding;
-    /*! \brief The size of the image, in bytes */
-    int image_size;
+    /*! \brief The number of HDLC frame retries, if error correcting mode is used. */
+    int error_correcting_mode_retries;
     /*! \brief Current status */
     int current_status;
 } t30_stats_t;
@@ -596,273 +558,69 @@ extern "C"
     \param s The T.30 context.
     \param calling_party TRUE if the context is for a calling party. FALSE if the
            context is for an answering party.
+    \param set_rx_type_handler
+    \param set_rx_type_user_data
+    \param set_tx_type_handler
+    \param set_tx_type_user_data
+    \param send_hdlc_handler
+    \param send_hdlc_user_data
     \return A pointer to the context, or NULL if there was a problem. */
-t30_state_t *t30_init(t30_state_t *s,
-                      int calling_party,
-                      t30_set_handler_t *set_rx_type_handler,
-                      void *set_rx_type_user_data,
-                      t30_set_handler_t *set_tx_type_handler,
-                      void *set_tx_type_user_data,
-                      t30_send_hdlc_handler_t *send_hdlc_handler,
-                      void *send_hdlc_user_data);
+SPAN_DECLARE(t30_state_t *) t30_init(t30_state_t *s,
+                                     int calling_party,
+                                     t30_set_handler_t *set_rx_type_handler,
+                                     void *set_rx_type_user_data,
+                                     t30_set_handler_t *set_tx_type_handler,
+                                     void *set_tx_type_user_data,
+                                     t30_send_hdlc_handler_t *send_hdlc_handler,
+                                     void *send_hdlc_user_data);
 
 /*! Release a T.30 context.
     \brief Release a T.30 context.
     \param s The T.30 context.
     \return 0 for OK, else -1. */
-int t30_release(t30_state_t *s);
+SPAN_DECLARE(int) t30_release(t30_state_t *s);
 
 /*! Free a T.30 context.
     \brief Free a T.30 context.
     \param s The T.30 context.
     \return 0 for OK, else -1. */
-int t30_free(t30_state_t *s);
+SPAN_DECLARE(int) t30_free(t30_state_t *s);
 
 /*! Restart a T.30 context.
     \brief Restart a T.30 context.
     \param s The T.30 context.
     \return 0 for OK, else -1. */
-int t30_restart(t30_state_t *s);
+SPAN_DECLARE(int) t30_restart(t30_state_t *s);
+
+/*! Check if a T.30 call is still active. This may be used to regularly poll
+    if the job has finished.
+    \brief Check if a T.30 call is still active.
+    \param s The T.30 context.
+    \return TRUE for call still active, or FALSE for call completed. */
+SPAN_DECLARE(int) t30_call_active(t30_state_t *s);
 
 /*! Cleanup a T.30 context if the call terminates.
     \brief Cleanup a T.30 context if the call terminates.
     \param s The T.30 context. */
-void t30_terminate(t30_state_t *s);
-
-/*! Return a text name for a T.30 frame type.
-    \brief Return a text name for a T.30 frame type.
-    \param x The frametype octet.
-    \return A pointer to the text name for the frame type. If the frame type is
-            not value, the string "???" is returned. */
-const char *t30_frametype(uint8_t x);
-
-/*! Decode a DIS, DTC or DCS frame, and log the contents.
-    \brief Decode a DIS, DTC or DCS frame, and log the contents.
-    \param s The T.30 context.
-    \param dis A pointer to the frame to be decoded.
-    \param len The length of the frame. */
-void t30_decode_dis_dtc_dcs(t30_state_t *s, const uint8_t *dis, int len);
-
-/*! Convert a phase E completion code to a short text description.
-    \brief Convert a phase E completion code to a short text description.
-    \param result The result code.
-    \return A pointer to the description. */
-const char *t30_completion_code_to_str(int result);
-
-/*! Set Internet aware FAX (IAF) mode.
-    \brief Set Internet aware FAX (IAF) mode.
-    \param s The T.30 context.
-    \param iaf TRUE for IAF, or FALSE for non-IAF. */
-void t30_set_iaf_mode(t30_state_t *s, int iaf);
-
-/*! Set the sub-address associated with a T.30 context.
-    \brief Set the sub-address associated with a T.30 context.
-    \param s The T.30 context.
-    \param sub_address A pointer to the sub-address.
-    \return 0 for OK, else -1. */
-int t30_set_local_sub_address(t30_state_t *s, const char *sub_address);
-
-/*! Set the header information associated with a T.30 context.
-    \brief Set the header information associated with a T.30 context.
-    \param s The T.30 context.
-    \param info A pointer to the information string.
-    \return 0 for OK, else -1. */
-int t30_set_header_info(t30_state_t *s, const char *info);
-
-/*! Set the local identifier associated with a T.30 context.
-    \brief Set the local identifier associated with a T.30 context.
-    \param s The T.30 context.
-    \param id A pointer to the identifier.
-    \return 0 for OK, else -1. */
-int t30_set_local_ident(t30_state_t *s, const char *id);
-
-int t30_set_local_nsf(t30_state_t *s, const uint8_t *nsf, int len);
-
-/*! Get the sub-address associated with a T.30 context.
-    \brief Get the sub-address associated with a T.30 context.
-    \param s The T.30 context.
-    \param sub_address A pointer to a buffer for the sub-address.  The buffer
-           should be at least 21 bytes long.
-    \return the length of the string. */
-size_t t30_get_sub_address(t30_state_t *s, char *sub_address);
-
-/*! Get the header information associated with a T.30 context.
-    \brief Get the header information associated with a T.30 context.
-    \param s The T.30 context.
-    \param sub_address A pointer to a buffer for the header information.  The buffer
-           should be at least 51 bytes long.
-    \return the length of the string. */
-size_t t30_get_header_info(t30_state_t *s, char *info);
-
-/*! Get the local FAX machine identifier associated with a T.30 context.
-    \brief Get the local identifier associated with a T.30 context.
-    \param s The T.30 context.
-    \param id A pointer to a buffer for the identifier. The buffer should
-           be at least 21 bytes long.
-    \return the length of the string. */
-size_t t30_get_local_ident(t30_state_t *s, char *id);
-
-/*! Get the remote FAX machine identifier associated with a T.30 context.
-    \brief Get the remote identifier associated with a T.30 context.
-    \param s The T.30 context.
-    \param id A pointer to a buffer for the identifier. The buffer should
-           be at least 21 bytes long.
-    \return the length of the string. */
-size_t t30_get_far_ident(t30_state_t *s, char *id);
-
-/*! Get the country of origin of the remote FAX machine associated with a T.30 context.
-    \brief Get the country of origin of the remote FAX machine associated with a T.30 context.
-    \param s The T.30 context.
-    \return a pointer to the country name, or NULL if the country is not known. */
-const char *t30_get_far_country(t30_state_t *s);
-
-/*! Get the name of the vendor of the remote FAX machine associated with a T.30 context.
-    \brief Get the name of the vendor of the remote FAX machine associated with a T.30 context.
-    \param s The T.30 context.
-    \return a pointer to the vendor name, or NULL if the vendor is not known. */
-const char *t30_get_far_vendor(t30_state_t *s);
-
-/*! Get the name of the model of the remote FAX machine associated with a T.30 context.
-    \brief Get the name of the model of the remote FAX machine associated with a T.30 context.
-    \param s The T.30 context.
-    \return a pointer to the model name, or NULL if the model is not known. */
-const char *t30_get_far_model(t30_state_t *s);
-
-/*! Get the current transfer statistics for the file being sent or received.
-    \brief Get the current transfer statistics.
-    \param s The T.30 context.
-    \param t A pointer to a buffer for the statistics. */
-void t30_get_transfer_statistics(t30_state_t *s, t30_stats_t *t);
-
-/*! Set a callback function for T.30 phase B handling.
-    \brief Set a callback function for T.30 phase B handling.
-    \param s The T.30 context.
-    \param handler The callback function
-    \param user_data An opaque pointer passed to the callback function. */
-void t30_set_phase_b_handler(t30_state_t *s, t30_phase_b_handler_t *handler, void *user_data);
-
-/*! Set a callback function for T.30 phase D handling.
-    \brief Set a callback function for T.30 phase D handling.
-    \param s The T.30 context.
-    \param handler The callback function
-    \param user_data An opaque pointer passed to the callback function. */
-void t30_set_phase_d_handler(t30_state_t *s, t30_phase_d_handler_t *handler, void *user_data);
-
-/*! Set a callback function for T.30 phase E handling.
-    \brief Set a callback function for T.30 phase E handling.
-    \param s The T.30 context.
-    \param handler The callback function
-    \param user_data An opaque pointer passed to the callback function. */
-void t30_set_phase_e_handler(t30_state_t *s, t30_phase_e_handler_t *handler, void *user_data);
-
-/*! Set a callback function for T.30 end of document handling.
-    \brief Set a callback function for T.30 end of document handling.
-    \param s The T.30 context.
-    \param handler The callback function
-    \param user_data An opaque pointer passed to the callback function. */
-void t30_set_document_handler(t30_state_t *s, t30_document_handler_t *handler, void *user_data);
-
-/*! Specify the file name of the next TIFF file to be received by a T.30
-    context.
-    \brief Set next receive file name.
-    \param s The T.30 context.
-    \param file The file name
-    \param stop_page The maximum page to receive. -1 for no restriction. */
-void t30_set_rx_file(t30_state_t *s, const char *file, int stop_page);
-
-/*! Specify the file name of the next TIFF file to be transmitted by a T.30
-    context.
-    \brief Set next transmit file name.
-    \param s The T.30 context.
-    \param file The file name
-    \param start_page The first page to send. -1 for no restriction.
-    \param stop_page The last page to send. -1 for no restriction. */
-void t30_set_tx_file(t30_state_t *s, const char *file, int start_page, int stop_page);
-
-/*! Specify which modem types are supported by a T.30 context.
-    \brief Specify supported modems.
-    \param s The T.30 context.
-    \param supported_modems Bit field list of the supported modems.
-    \return 0 if OK, else -1. */
-int t30_set_supported_modems(t30_state_t *s, int supported_modems);
-
-/*! Specify a period of responding with receiver not ready.
-    \brief Specify a period of responding with receiver not ready.
-    \param s The T.30 context.
-    \param count The number of times to report receiver not ready.
-    \return 0 if OK, else -1. */
-int t30_set_receiver_not_ready(t30_state_t *s, int count);
-
-/*! Specify which compression types are supported by a T.30 context.
-    \brief Specify supported compression types.
-    \param s The T.30 context.
-    \param supported_compressions Bit field list of the supported compression types.
-    \return 0 if OK, else -1. */
-int t30_set_supported_compressions(t30_state_t *s, int supported_compressions);
-
-/*! Specify which resolutions are supported by a T.30 context.
-    \brief Specify supported resolutions.
-    \param s The T.30 context.
-    \param supported_compressions Bit field list of the supported resolutions.
-    \return 0 if OK, else -1. */
-int t30_set_supported_resolutions(t30_state_t *s, int supported_resolutions);
-
-/*! Specify which images sizes are supported by a T.30 context.
-    \brief Specify supported image sizes.
-    \param s The T.30 context.
-    \param supported_image_sizes Bit field list of the supported widths and lengths.
-    \return 0 if OK, else -1. */
-int t30_set_supported_image_sizes(t30_state_t *s, int supported_image_sizes);
-
-/*! Specify if error correction mode (ECM) is allowed by a T.30 context.
-    \brief Select ECM capability.
-    \param s The T.30 context.
-    \param enabled TRUE for ECM capable, FALSE for not ECM capable.
-    \return 0 if OK, else -1. */
-int t30_set_ecm_capability(t30_state_t *s, int enabled);
-
-/*! Specify a specific minimum number of bits per row for non-ECM image data
-    generated by a T.30 context. This is useful for forcing no fill insertion
-    for T.38.
-    \brief Specify minimum bits per non-ECM row.
-    \param s The T.30 context.
-    \param bit -1 for no specified minimum, else the number of bits.
-    \return 0 if OK, else -1. */
-int t30_set_min_non_ecm_row_bits(t30_state_t *s, int bits);
-
-/*! Specify the output encoding for TIFF files created during FAX reception.
-    \brief Specify the output encoding for TIFF files created during FAX reception.
-    \param s The T.30 context.
-    \param encoding. The coding required. The options are T4_COMPRESSION_ITU_T4_1D,
-           T4_COMPRESSION_ITU_T4_2D, T4_COMPRESSION_ITU_T6. T6 is usually the
-           densest option, but support for it is broken in a number of software
-           packages.
-    \return 0 if OK, else -1. */
-int t30_set_rx_encoding(t30_state_t *s, int encoding);
-
-/*! Request a local interrupt of FAX exchange.
-    \brief Request a local interrupt of FAX exchange.
-    \param s The T.30 context.
-    \param state TRUE to enable interrupt request, else FALSE. */
-void t30_local_interrupt_request(t30_state_t *s, int state);
+SPAN_DECLARE(void) t30_terminate(t30_state_t *s);
 
 /*! Inform the T.30 engine of a status change in the front end (end of tx, rx signal change, etc.).
     \brief Inform the T.30 engine of a status change in the front end (end of tx, rx signal change, etc.).
     \param user_data The T.30 context.
     \param status The type of status change which occured. */
-void t30_front_end_status(void *user_data, int status);
+SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status);
 
 /*! Get a bit of received non-ECM image data.
     \brief Get a bit of received non-ECM image data.
     \param user_data An opaque pointer, which must point to the T.30 context.
     \return The next bit to transmit. */
-int t30_non_ecm_get_bit(void *user_data);
+SPAN_DECLARE_NONSTD(int) t30_non_ecm_get_bit(void *user_data);
 
 /*! Get a byte of received non-ECM image data.
     \brief Get a byte of received non-ECM image data.
     \param user_data An opaque pointer, which must point to the T.30 context.
     \return The next byte to transmit. */
-int t30_non_ecm_get_byte(void *user_data);
+SPAN_DECLARE(int) t30_non_ecm_get_byte(void *user_data);
 
 /*! Get a chunk of received non-ECM image data.
     \brief Get a bit of received non-ECM image data.
@@ -870,40 +628,52 @@ int t30_non_ecm_get_byte(void *user_data);
     \param buf The buffer to contain the data.
     \param max_len The maximum length of the chunk.
     \return The actual length of the chunk. */
-int t30_non_ecm_get_chunk(void *user_data, uint8_t buf[], int max_len);
+SPAN_DECLARE(int) t30_non_ecm_get_chunk(void *user_data, uint8_t buf[], int max_len);
 
 /*! Process a bit of received non-ECM image data.
     \brief Process a bit of received non-ECM image data
     \param user_data An opaque pointer, which must point to the T.30 context.
     \param bit The received bit. */
-void t30_non_ecm_put_bit(void *user_data, int bit);
+SPAN_DECLARE_NONSTD(void) t30_non_ecm_put_bit(void *user_data, int bit);
 
 /*! Process a byte of received non-ECM image data.
     \brief Process a byte of received non-ECM image data
     \param user_data An opaque pointer, which must point to the T.30 context.
     \param byte The received byte. */
-void t30_non_ecm_put_byte(void *user_data, int byte);
+SPAN_DECLARE(void) t30_non_ecm_put_byte(void *user_data, int byte);
 
 /*! Process a chunk of received non-ECM image data.
     \brief Process a chunk of received non-ECM image data
     \param user_data An opaque pointer, which must point to the T.30 context.
     \param buf The buffer containing the received data.
     \param len The length of the data in buf. */
-void t30_non_ecm_put_chunk(void *user_data, const uint8_t buf[], int len);
+SPAN_DECLARE(void) t30_non_ecm_put_chunk(void *user_data, const uint8_t buf[], int len);
 
 /*! Process a received HDLC frame.
     \brief Process a received HDLC frame.
-    \param s The T.30 context.
+    \param user_data The T.30 context.
     \param msg The HDLC message.
-    \param int The length of the message, in octets.
+    \param len The length of the message, in octets.
     \param ok TRUE if the frame was received without error. */
-void t30_hdlc_accept(void *user_data, const uint8_t *msg, int len, int ok);
+SPAN_DECLARE_NONSTD(void) t30_hdlc_accept(void *user_data, const uint8_t msg[], int len, int ok);
 
 /*! Report the passage of time to the T.30 engine.
     \brief Report the passage of time to the T.30 engine.
     \param s The T.30 context.
     \param samples The time change in 1/8000th second steps. */
-void t30_timer_update(t30_state_t *s, int samples);
+SPAN_DECLARE(void) t30_timer_update(t30_state_t *s, int samples);
+
+/*! Get the current transfer statistics for the file being sent or received.
+    \brief Get the current transfer statistics.
+    \param s The T.30 context.
+    \param t A pointer to a buffer for the statistics. */
+SPAN_DECLARE(void) t30_get_transfer_statistics(t30_state_t *s, t30_stats_t *t);
+
+/*! Request a local interrupt of FAX exchange.
+    \brief Request a local interrupt of FAX exchange.
+    \param s The T.30 context.
+    \param state TRUE to enable interrupt request, else FALSE. */
+SPAN_DECLARE(void) t30_local_interrupt_request(t30_state_t *s, int state);
 
 #if defined(__cplusplus)
 }

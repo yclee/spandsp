@@ -23,7 +23,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: r2_mf_rx_tests.c,v 1.5 2007/11/10 11:14:58 steveu Exp $
+ * $Id: r2_mf_rx_tests.c,v 1.14 2009/05/30 15:23:14 steveu Exp $
  */
 
 /*! \file */
@@ -39,7 +39,10 @@ distortion this produces is comparable to u-law, so it should be
 a fair test of performance in a real PSTN channel.
 */
 
-#ifdef HAVE_CONFIG_H
+/* Enable the following definition to enable direct probing into the FAX structures */
+//#define WITH_SPANDSP_INTERNALS
+
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -48,7 +51,11 @@ a fair test of performance in a real PSTN channel.
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
-#include <audiofile.h>
+#include <sndfile.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 
@@ -80,6 +87,9 @@ a fair test of performance in a real PSTN channel.
 #define MF_PAUSE                    (68*8)
 #define MF_CYCLE                    (MF_DURATION + MF_PAUSE)
 
+/*!
+    MF tone generator descriptor for tests.
+*/
 typedef struct
 {
     float       f1;         /* First freq */
@@ -133,6 +143,9 @@ static const mf_digit_tones_t r2_mf_back_tones[] =
 static tone_gen_descriptor_t my_mf_digit_tones[16];
 
 static char r2_mf_tone_codes[] = "1234567890BCDEF";
+
+int callback_ok;
+int callback_roll;
 
 static void my_mf_gen_init(float low_fudge,
                            int low_level,
@@ -193,6 +206,30 @@ static void codec_munge(int16_t amp[], int len)
 }
 /*- End of function --------------------------------------------------------*/
 
+static void digit_delivery(void *data, int digit, int level, int delay)
+{
+    char ch;
+
+    if (data != (void *) 0x12345678)
+    {
+        callback_ok = FALSE;
+        return;
+    }
+    if ((callback_roll & 1))
+        ch = 0;
+    else
+        ch = r2_mf_tone_codes[callback_roll >> 1];
+    if (ch == digit)
+        callback_ok = TRUE;
+    else
+        callback_ok = FALSE;
+    if (r2_mf_tone_codes[callback_roll >> 1])
+        callback_roll++;
+    else
+        callback_ok = FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
 static int test_a_tone_set(int fwd)
 {
     int i;
@@ -215,7 +252,7 @@ static int test_a_tone_set(int fwd)
         tone = &r2_mf_fwd_tones[0];
     else
         tone = &r2_mf_back_tones[0];
-    r2_mf_rx_init(&mf_state, fwd);
+    r2_mf_rx_init(&mf_state, fwd, NULL, NULL);
 
     /* Test 1: Mitel's test 1 isn't really a test. Its a calibration step,
        which has no meaning here. */
@@ -238,7 +275,8 @@ static int test_a_tone_set(int fwd)
         {
             len = my_mf_generate(amp, digit);
             codec_munge (amp, len);
-            actual = r2_mf_rx(&mf_state, amp, len);
+            r2_mf_rx(&mf_state, amp, len);
+            actual = r2_mf_rx_get(&mf_state);
             if (actual != digit)
             {
                 printf ("    Sent     '%c'\n", digit);
@@ -289,7 +327,8 @@ static int test_a_tone_set(int fwd)
             my_mf_gen_init((float) i/1000.0, -17, 0.0, -17, 68, fwd);
             len = my_mf_generate(amp, digit);
             codec_munge(amp, len);
-            if (r2_mf_rx(&mf_state, amp, len) == digit)
+            r2_mf_rx(&mf_state, amp, len);
+            if (r2_mf_rx_get(&mf_state) == digit)
                 nplus++;
         }
         for (nminus = 0, i = -1;  i >= -60;  i--)
@@ -297,7 +336,8 @@ static int test_a_tone_set(int fwd)
             my_mf_gen_init((float) i/1000.0, -17, 0.0, -17, 68, fwd);
             len = my_mf_generate(amp, digit);
             codec_munge(amp, len);
-            if (r2_mf_rx(&mf_state, amp, len) == digit)
+            r2_mf_rx(&mf_state, amp, len);
+            if (r2_mf_rx_get(&mf_state) == digit)
                 nminus++;
         }
         rrb = (float) (nplus + nminus)/10.0;
@@ -320,7 +360,8 @@ static int test_a_tone_set(int fwd)
             my_mf_gen_init(0.0, -17, (float) i/1000.0, -17, 68, fwd);
             len = my_mf_generate(amp, digit);
             codec_munge(amp, len);
-            if (r2_mf_rx(&mf_state, amp, len) == digit)
+            r2_mf_rx(&mf_state, amp, len);
+            if (r2_mf_rx_get(&mf_state) == digit)
                 nplus++;
         }
         for (nminus = 0, i = -1;  i >= -60;  i--)
@@ -328,7 +369,8 @@ static int test_a_tone_set(int fwd)
             my_mf_gen_init(0.0, -17, (float) i/1000.0, -17, 68, fwd);
             len = my_mf_generate(amp, digit);
             codec_munge(amp, len);
-            if (r2_mf_rx(&mf_state, amp, len) == digit)
+            r2_mf_rx(&mf_state, amp, len);
+            if (r2_mf_rx_get(&mf_state) == digit)
                 nminus++;
         }
         rrb = (float) (nplus + nminus)/10.0;
@@ -364,7 +406,8 @@ static int test_a_tone_set(int fwd)
 
             len = my_mf_generate(amp, digit);
             codec_munge (amp, len);
-            if (r2_mf_rx(&mf_state, amp, len) == digit)
+            r2_mf_rx(&mf_state, amp, len);
+            if (r2_mf_rx_get(&mf_state) == digit)
                 nplus++;
         }
         printf ("    %c normal twist  = %.2fdB\n", digit, (float) nplus/10.0);
@@ -379,7 +422,8 @@ static int test_a_tone_set(int fwd)
 
             len = my_mf_generate(amp, digit);
             codec_munge(amp, len);
-            if (r2_mf_rx(&mf_state, amp, len) == digit)
+            r2_mf_rx(&mf_state, amp, len);
+            if (r2_mf_rx_get(&mf_state) == digit)
                 nminus++;
         }
         printf ("    %c reverse twist = %.2fdB\n", digit, (float) nminus/10.0);
@@ -408,7 +452,8 @@ static int test_a_tone_set(int fwd)
             {
                 len = my_mf_generate(amp, digit);
                 codec_munge(amp, len);
-                if (r2_mf_rx(&mf_state, amp, len) != digit)
+                r2_mf_rx(&mf_state, amp, len);
+                if (r2_mf_rx_get(&mf_state) != digit)
                     break;
             }
             if (j < 100)
@@ -450,7 +495,8 @@ static int test_a_tone_set(int fwd)
             {
                 len = my_mf_generate(amp, digit);
                 codec_munge(amp, len);
-                if (r2_mf_rx(&mf_state, amp, len) != digit)
+                r2_mf_rx(&mf_state, amp, len);
+                if (r2_mf_rx_get(&mf_state) != digit)
                     break;
             }
             if (j < 500)
@@ -486,7 +532,8 @@ static int test_a_tone_set(int fwd)
                 for (sample = 0;  sample < len;  sample++)
                     amp[sample] = saturate(amp[sample] + awgn(&noise_source));
                 codec_munge(amp, len);
-                if (r2_mf_rx(&mf_state, amp, len) != digit)
+                r2_mf_rx(&mf_state, amp, len);
+                if (r2_mf_rx_get(&mf_state) != digit)
                     break;
             }
             if (j < 500)
@@ -503,6 +550,35 @@ static int test_a_tone_set(int fwd)
     }
     printf("    Passed\n");
 
+    printf("Test 8: Callback digit delivery mode.\n");
+    callback_ok = FALSE;
+    callback_roll = 0;
+    r2_mf_rx_init(&mf_state, fwd, digit_delivery, (void *) 0x12345678);
+    my_mf_gen_init(0.0, -3, 0.0, -3, 68, fwd);
+    s = r2_mf_tone_codes;
+    awgn_init_dbm0(&noise_source, 1234567, -40.0f);
+    while (*s)
+    {
+        digit = *s++;
+        len = my_mf_generate(amp, digit);
+        for (sample = 0;  sample < len;  sample++)
+            amp[sample] = saturate(amp[sample] + awgn(&noise_source));
+        codec_munge(amp, len);
+        r2_mf_rx(&mf_state, amp, len);
+        len = 160;
+        memset(amp, '\0', len*sizeof(int16_t));
+        for (sample = 0;  sample < len;  sample++)
+            amp[sample] = saturate(amp[sample] + awgn(&noise_source));
+        codec_munge(amp, len);
+        r2_mf_rx(&mf_state, amp, len);
+    }
+    if (!callback_ok)
+    {
+        printf("    Failed\n");
+     	exit (2);
+    }
+    printf("    Passed\n");
+
     /* The remainder of the Mitel tape is the talk-off test. This is
        meaningless for R2 MF. However the decoder's tolerance of
        out of band noise is significant. */
@@ -512,7 +588,7 @@ static int test_a_tone_set(int fwd)
 }
 /*- End of function --------------------------------------------------------*/
 
-int main (int argc, char *argv[])
+int main(int argc, char *argv[])
 {
     time_t now;
     time_t duration;

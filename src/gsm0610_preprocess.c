@@ -10,28 +10,28 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * This code is based on the widely used GSM 06.10 code available from
  * http://kbs.cs.tu-berlin.de/~jutta/toast.html
  *
- * $Id: gsm0610_preprocess.c,v 1.8 2007/08/20 15:22:22 steveu Exp $
+ * $Id: gsm0610_preprocess.c,v 1.17 2009/02/03 16:28:39 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <assert.h>
@@ -42,11 +42,13 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <stdlib.h>
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/bitstream.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/saturated.h"
 #include "spandsp/gsm0610.h"
 
 #include "gsm0610_local.h"
@@ -120,7 +122,7 @@ void gsm0610_preprocess(gsm0610_state_t *s, const int16_t amp[GSM0610_FRAME_LEN]
          * L_temp = (++L_temp) >> 1;
          * L_z2 = L_z2 - L_temp;
          */
-        L_z2 = gsm_l_add(L_z2, L_s2);
+        L_z2 = saturated_add32(L_z2, L_s2);
 #else
         /* This does L_z2  = L_z2 * 0x7FD5/0x8000 + L_s2 */
         msp = (int16_t) (L_z2 >> 15);
@@ -128,16 +130,16 @@ void gsm0610_preprocess(gsm0610_state_t *s, const int16_t amp[GSM0610_FRAME_LEN]
 
         L_s2 += gsm_mult_r(lsp, 32735);
         L_temp = (int32_t) msp*32735;
-        L_z2 = gsm_l_add(L_temp, L_s2);
+        L_z2 = saturated_add32(L_temp, L_s2);
 #endif
 
         /* Compute sof[k] with rounding */
-        L_temp = gsm_l_add(L_z2, 16384);
+        L_temp = saturated_add32(L_z2, 16384);
 
         /* 4.2.3  Preemphasis */
         msp = gsm_mult_r(mp, -28180);
         mp = (int16_t) (L_temp >> 15);
-        so[k] = gsm_add(mp, msp);
+        so[k] = saturated_add16(mp, msp);
     }
     /*endfor*/
 

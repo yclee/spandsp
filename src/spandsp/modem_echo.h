@@ -13,19 +13,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: modem_echo.h,v 1.8 2007/04/05 19:20:49 steveu Exp $
+ * $Id: modem_echo.h,v 1.14 2009/09/22 13:11:04 steveu Exp $
  */
 
 /*! \file */
@@ -84,44 +84,34 @@ minor burden.
     Modem line echo canceller descriptor. This defines the working state for a line
     echo canceller.
 */
-typedef struct
+typedef struct modem_echo_can_state_s modem_echo_can_state_t;
+
+#if defined(__cplusplus)
+extern "C"
 {
-    int adapt;
-    int taps;
-
-    fir16_state_t fir_state;
-    /*! Echo FIR taps (16 bit version) */
-    int16_t *fir_taps16;
-    /*! Echo FIR taps (32 bit version) */
-    int32_t *fir_taps32;
-
-    int tx_power;
-    int rx_power;
-
-    int curr_pos;
-} modem_echo_can_state_t;
+#endif
 
 /*! Create a modem echo canceller context.
     \param len The length of the canceller, in samples.
     eturn The new canceller context, or NULL if the canceller could not be created.
 */
-modem_echo_can_state_t *modem_echo_can_create(int len);
+SPAN_DECLARE(modem_echo_can_state_t *) modem_echo_can_create(int len);
 
 /*! Free a modem echo canceller context.
     \param ec The echo canceller context.
 */
-void modem_echo_can_free(modem_echo_can_state_t *ec);
+SPAN_DECLARE(void) modem_echo_can_free(modem_echo_can_state_t *ec);
 
 /*! Flush (reinitialise) a modem echo canceller context.
     \param ec The echo canceller context.
 */
-void modem_echo_can_flush(modem_echo_can_state_t *ec);
+SPAN_DECLARE(void) modem_echo_can_flush(modem_echo_can_state_t *ec);
 
 /*! Set the adaption mode of a modem echo canceller context.
     \param ec The echo canceller context.
     \param adapt The mode.
 */
-void modem_echo_can_adaption_mode(modem_echo_can_state_t *ec, int adapt);
+SPAN_DECLARE(void) modem_echo_can_adaption_mode(modem_echo_can_state_t *ec, int adapt);
 
 /*! Process a sample through a modem echo canceller.
     \param ec The echo canceller context.
@@ -129,7 +119,11 @@ void modem_echo_can_adaption_mode(modem_echo_can_state_t *ec, int adapt);
     \param rx The received audio sample.
     eturn The clean (echo cancelled) received sample.
 */
-int16_t modem_echo_can_update(modem_echo_can_state_t *ec, int16_t tx, int16_t rx);
+SPAN_DECLARE(int16_t) modem_echo_can_update(modem_echo_can_state_t *ec, int16_t tx, int16_t rx);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif
 /*- End of file ------------------------------------------------------------*/

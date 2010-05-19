@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: line_model.h,v 1.1 2007/04/03 12:59:32 steveu Exp $
+ * $Id: line_model.h,v 1.7.4.1 2009/12/19 10:16:44 steveu Exp $
  */
 
 /*! \file */
@@ -56,6 +56,9 @@ The path being modelled is:
 #if !defined(_SPANDSP_LINE_MODEL_H_)
 #define _SPANDSP_LINE_MODEL_H_
 
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+#include <spandsp.h>
+
 #define LINE_FILTER_SIZE 129
 
 /*!
@@ -67,7 +70,7 @@ typedef struct
     codec_munge_state_t *munge;
 
     /*! The coefficients for the near end analogue section simulation filter */
-    float *near_filter;
+    const float *near_filter;
     /*! The number of coefficients for the near end analogue section simulation filter */
     int near_filter_len;
     /*! Last transmitted samples (ring buffer, used by the line filter) */
@@ -85,7 +88,7 @@ typedef struct
     int16_t bulk_delay_buf[8000];
 
     /*! The coefficients for the far end analogue section simulation filter */
-    float *far_filter;
+    const float *far_filter;
     /*! The number of coefficients for the far end analogue section simulation filter */
     int far_filter_len;
     /*! Last transmitted samples (ring buffer, used by the line filter) */
@@ -129,38 +132,40 @@ extern "C"
 {
 #endif
 
-void both_ways_line_model(both_ways_line_model_state_t *s, 
-                          int16_t output1[],
-                          const int16_t input1[],
-                          int16_t output2[],
-                          const int16_t input2[],
-                          int samples);
+SPAN_DECLARE_DATA extern const float *line_models[];
 
-void both_ways_line_model_set_dc(both_ways_line_model_state_t *s, float dc1, float dc2);
+SPAN_DECLARE(void) both_ways_line_model(both_ways_line_model_state_t *s, 
+                                        int16_t output1[],
+                                        const int16_t input1[],
+                                        int16_t output2[],
+                                        const int16_t input2[],
+                                        int samples);
 
-void both_ways_line_model_set_mains_pickup(both_ways_line_model_state_t *s, int f, float level1, float level2);
+SPAN_DECLARE(void) both_ways_line_model_set_dc(both_ways_line_model_state_t *s, float dc1, float dc2);
+
+SPAN_DECLARE(void) both_ways_line_model_set_mains_pickup(both_ways_line_model_state_t *s, int f, float level1, float level2);
     
-both_ways_line_model_state_t *both_ways_line_model_init(int model1,
-                                                        float noise1,
-                                                        int model2,
-                                                        float noise2,
-                                                        int codec,
-                                                        int rbs_pattern);
+SPAN_DECLARE(both_ways_line_model_state_t *) both_ways_line_model_init(int model1,
+                                                                       float noise1,
+                                                                       int model2,
+                                                                       float noise2,
+                                                                       int codec,
+                                                                       int rbs_pattern);
 
-int both_ways_line_model_release(both_ways_line_model_state_t *s);
+SPAN_DECLARE(int) both_ways_line_model_release(both_ways_line_model_state_t *s);
 
-void one_way_line_model(one_way_line_model_state_t *s, 
-                        int16_t output[],
-                        const int16_t input[],
-                        int samples);
+SPAN_DECLARE(void) one_way_line_model(one_way_line_model_state_t *s, 
+                                      int16_t output[],
+                                      const int16_t input[],
+                                      int samples);
 
-void one_way_line_model_set_dc(one_way_line_model_state_t *s, float dc);
+SPAN_DECLARE(void) one_way_line_model_set_dc(one_way_line_model_state_t *s, float dc);
 
-void one_way_line_model_set_mains_pickup(one_way_line_model_state_t *s, int f, float level);
+SPAN_DECLARE(void) one_way_line_model_set_mains_pickup(one_way_line_model_state_t *s, int f, float level);
 
-one_way_line_model_state_t *one_way_line_model_init(int model, float noise, int codec, int rbs_pattern);
+SPAN_DECLARE(one_way_line_model_state_t *) one_way_line_model_init(int model, float noise, int codec, int rbs_pattern);
 
-int one_way_line_model_release(one_way_line_model_state_t *s);
+SPAN_DECLARE(int) one_way_line_model_release(one_way_line_model_state_t *s);
 
 #ifdef __cplusplus
 }

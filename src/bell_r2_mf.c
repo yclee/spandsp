@@ -10,24 +10,24 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: bell_r2_mf.c,v 1.19 2007/11/30 12:20:33 steveu Exp $
+ * $Id: bell_r2_mf.c,v 1.39.4.1 2009/12/23 14:23:48 steveu Exp $
  */
 
-/*! \file bell_r2_mf.h */
+/*! \file */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -42,27 +42,36 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/queue.h"
 #include "spandsp/dc_restore.h"
 #include "spandsp/complex.h"
 #include "spandsp/dds.h"
 #include "spandsp/tone_detect.h"
 #include "spandsp/tone_generate.h"
+#include "spandsp/super_tone_rx.h"
+#include "spandsp/dtmf.h"
 #include "spandsp/bell_r2_mf.h"
+
+#include "spandsp/private/queue.h"
+#include "spandsp/private/tone_generate.h"
+#include "spandsp/private/bell_r2_mf.h"
 
 #if !defined(M_PI)
 /* C99 systems may not define M_PI */
 #define M_PI 3.14159265358979323846264338327
 #endif
 
-#define ms_to_samples(t)            (((t)*SAMPLE_RATE)/1000)
-
+/*!
+    MF tone descriptor.
+*/
 typedef struct
 {
-    float       f1;         /* First freq */
-    float       f2;         /* Second freq */
+    int         f1;         /* First freq */
+    int         f2;         /* Second freq */
     int8_t      level1;     /* Level of the first freq (dB) */
     int8_t      level2;     /* Level of the second freq (dB) */
     uint8_t     on_time;    /* Tone on time (ms) */
@@ -90,22 +99,22 @@ tone_gen_descriptor_t socotel_mf_digit_tones[18];
  */
 static const mf_digit_tones_t bell_mf_tones[] =
 {
-    { 700.0f,  900.0f, -7, -7,  68, 68},
-    { 700.0f, 1100.0f, -7, -7,  68, 68},
-    { 900.0f, 1100.0f, -7, -7,  68, 68},
-    { 700.0f, 1300.0f, -7, -7,  68, 68},
-    { 900.0f, 1300.0f, -7, -7,  68, 68},
-    {1100.0f, 1300.0f, -7, -7,  68, 68},
-    { 700.0f, 1500.0f, -7, -7,  68, 68},
-    { 900.0f, 1500.0f, -7, -7,  68, 68},
-    {1100.0f, 1500.0f, -7, -7,  68, 68},
-    {1300.0f, 1500.0f, -7, -7,  68, 68},
-    { 700.0f, 1700.0f, -7, -7,  68, 68}, /* ST''' - use 'C' */
-    { 900.0f, 1700.0f, -7, -7,  68, 68}, /* ST'   - use 'A' */
-    {1100.0f, 1700.0f, -7, -7, 100, 68}, /* KP    - use '*' */
-    {1300.0f, 1700.0f, -7, -7,  68, 68}, /* ST''  - use 'B' */
-    {1500.0f, 1700.0f, -7, -7,  68, 68}, /* ST    - use '#' */
-    {0.0f, 0.0f, 0, 0, 0, 0}
+    { 700,  900, -7, -7,  68, 68},
+    { 700, 1100, -7, -7,  68, 68},
+    { 900, 1100, -7, -7,  68, 68},
+    { 700, 1300, -7, -7,  68, 68},
+    { 900, 1300, -7, -7,  68, 68},
+    {1100, 1300, -7, -7,  68, 68},
+    { 700, 1500, -7, -7,  68, 68},
+    { 900, 1500, -7, -7,  68, 68},
+    {1100, 1500, -7, -7,  68, 68},
+    {1300, 1500, -7, -7,  68, 68},
+    { 700, 1700, -7, -7,  68, 68}, /* ST''' - use 'C' */
+    { 900, 1700, -7, -7,  68, 68}, /* ST'   - use 'A' */
+    {1100, 1700, -7, -7, 100, 68}, /* KP    - use '*' */
+    {1300, 1700, -7, -7,  68, 68}, /* ST''  - use 'B' */
+    {1500, 1700, -7, -7,  68, 68}, /* ST    - use '#' */
+    {0, 0, 0, 0, 0, 0}
 };
 
 /* The order of the digits here must match the list above */
@@ -119,42 +128,42 @@ static const char bell_mf_tone_codes[] = "1234567890CA*B#";
  */
 static const mf_digit_tones_t r2_mf_fwd_tones[] =
 {
-    {1380.0f, 1500.0f, -11, -11, 1, 0},
-    {1380.0f, 1620.0f, -11, -11, 1, 0},
-    {1500.0f, 1620.0f, -11, -11, 1, 0},
-    {1380.0f, 1740.0f, -11, -11, 1, 0},
-    {1500.0f, 1740.0f, -11, -11, 1, 0},
-    {1620.0f, 1740.0f, -11, -11, 1, 0},
-    {1380.0f, 1860.0f, -11, -11, 1, 0},
-    {1500.0f, 1860.0f, -11, -11, 1, 0},
-    {1620.0f, 1860.0f, -11, -11, 1, 0},
-    {1740.0f, 1860.0f, -11, -11, 1, 0},
-    {1380.0f, 1980.0f, -11, -11, 1, 0},
-    {1500.0f, 1980.0f, -11, -11, 1, 0},
-    {1620.0f, 1980.0f, -11, -11, 1, 0},
-    {1740.0f, 1980.0f, -11, -11, 1, 0},
-    {1860.0f, 1980.0f, -11, -11, 1, 0},
-    {0.0f, 0.0f, 0, 0, 0, 0}
+    {1380, 1500, -11, -11, 1, 0},
+    {1380, 1620, -11, -11, 1, 0},
+    {1500, 1620, -11, -11, 1, 0},
+    {1380, 1740, -11, -11, 1, 0},
+    {1500, 1740, -11, -11, 1, 0},
+    {1620, 1740, -11, -11, 1, 0},
+    {1380, 1860, -11, -11, 1, 0},
+    {1500, 1860, -11, -11, 1, 0},
+    {1620, 1860, -11, -11, 1, 0},
+    {1740, 1860, -11, -11, 1, 0},
+    {1380, 1980, -11, -11, 1, 0},
+    {1500, 1980, -11, -11, 1, 0},
+    {1620, 1980, -11, -11, 1, 0},
+    {1740, 1980, -11, -11, 1, 0},
+    {1860, 1980, -11, -11, 1, 0},
+    {0, 0, 0, 0, 0, 0}
 };
 
 static const mf_digit_tones_t r2_mf_back_tones[] =
 {
-    {1140.0f, 1020.0f, -11, -11, 1, 0},
-    {1140.0f,  900.0f, -11, -11, 1, 0},
-    {1020.0f,  900.0f, -11, -11, 1, 0},
-    {1140.0f,  780.0f, -11, -11, 1, 0},
-    {1020.0f,  780.0f, -11, -11, 1, 0},
-    { 900.0f,  780.0f, -11, -11, 1, 0},
-    {1140.0f,  660.0f, -11, -11, 1, 0},
-    {1020.0f,  660.0f, -11, -11, 1, 0},
-    { 900.0f,  660.0f, -11, -11, 1, 0},
-    { 780.0f,  660.0f, -11, -11, 1, 0},
-    {1140.0f,  540.0f, -11, -11, 1, 0},
-    {1020.0f,  540.0f, -11, -11, 1, 0},
-    { 900.0f,  540.0f, -11, -11, 1, 0},
-    { 780.0f,  540.0f, -11, -11, 1, 0},
-    { 660.0f,  540.0f, -11, -11, 1, 0},
-    {0.0f, 0.0f, 0, 0, 0, 0}
+    {1140, 1020, -11, -11, 1, 0},
+    {1140,  900, -11, -11, 1, 0},
+    {1020,  900, -11, -11, 1, 0},
+    {1140,  780, -11, -11, 1, 0},
+    {1020,  780, -11, -11, 1, 0},
+    { 900,  780, -11, -11, 1, 0},
+    {1140,  660, -11, -11, 1, 0},
+    {1020,  660, -11, -11, 1, 0},
+    { 900,  660, -11, -11, 1, 0},
+    { 780,  660, -11, -11, 1, 0},
+    {1140,  540, -11, -11, 1, 0},
+    {1020,  540, -11, -11, 1, 0},
+    { 900,  540, -11, -11, 1, 0},
+    { 780,  540, -11, -11, 1, 0},
+    { 660,  540, -11, -11, 1, 0},
+    {0, 0, 0, 0, 0, 0}
 };
 
 /* The order of the digits here must match the lists above */
@@ -163,46 +172,50 @@ static const char r2_mf_tone_codes[] = "1234567890BCDEF";
 #if 0
 static const mf_digit_tones_t socotel_tones[] =
 {
-    { 700.0f,  900.0f, -11, -11, 1, 0},
-    { 700.0f, 1100.0f, -11, -11, 1, 0},
-    { 900.0f, 1100.0f, -11, -11, 1, 0},
-    { 700.0f, 1300.0f, -11, -11, 1, 0},
-    { 900.0f, 1300.0f, -11, -11, 1, 0},
-    {1100.0f, 1300.0f, -11, -11, 1, 0},
-    { 700.0f, 1500.0f, -11, -11, 1, 0},
-    { 900.0f, 1500.0f, -11, -11, 1, 0},
-    {1100.0f, 1500.0f, -11, -11, 1, 0},
-    {1300.0f, 1500.0f, -11, -11, 1, 0},
-    {1500.0f, 1700.0f, -11, -11, 1, 0},
-    { 700.0f, 1700.0f, -11, -11, 1, 0},
-    { 900.0f, 1700.0f, -11, -11, 1, 0},
-    {1300.0f, 1700.0f, -11, -11, 1, 0},
-    {1100.0f, 1700.0f, -11, -11, 1, 0},
-    {1700.0f,    0.0f, -11, -11, 1, 0},   /* Use 'F' */
-    {1900.0f,    0.0f, -11, -11, 1, 0},   /* Use 'G' */
-    {0.0f, 0.0f, 0, 0, 0, 0}
+    { 700,  900, -11, -11, 1, 0},
+    { 700, 1100, -11, -11, 1, 0},
+    { 900, 1100, -11, -11, 1, 0},
+    { 700, 1300, -11, -11, 1, 0},
+    { 900, 1300, -11, -11, 1, 0},
+    {1100, 1300, -11, -11, 1, 0},
+    { 700, 1500, -11, -11, 1, 0},
+    { 900, 1500, -11, -11, 1, 0},
+    {1100, 1500, -11, -11, 1, 0},
+    {1300, 1500, -11, -11, 1, 0},
+    {1500, 1700, -11, -11, 1, 0},
+    { 700, 1700, -11, -11, 1, 0},
+    { 900, 1700, -11, -11, 1, 0},
+    {1300, 1700, -11, -11, 1, 0},
+    {1100, 1700, -11, -11, 1, 0},
+    {1700,    0, -11, -11, 1, 0},   /* Use 'F' */
+    {1900,    0, -11, -11, 1, 0},   /* Use 'G' */
+    {0, 0, 0, 0, 0, 0}
 };
 
 /* The order of the digits here must match the list above */
 static char socotel_mf_tone_codes[] = "1234567890ABCDEFG";
 #endif
 
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-#define BELL_MF_THRESHOLD           (1.6e9f/65536.0f)
-#define BELL_MF_TWIST               4.0f    /* 6dB */
-#define BELL_MF_RELATIVE_PEAK       12.6f   /* 11dB */
+#if defined(SPANDSP_USE_FIXED_POINT)
+#define BELL_MF_THRESHOLD           204089              /* -30.5dBm0 */
+#define BELL_MF_TWIST               3.981f              /* 6dB */
+#define BELL_MF_RELATIVE_PEAK       12.589f             /* 11dB */
+#define BELL_MF_SAMPLES_PER_BLOCK   120
 
-#define R2_MF_THRESHOLD             (5.0e8f/4096.0f)
-#define R2_MF_TWIST                 5.0f    /* 7dB */
-#define R2_MF_RELATIVE_PEAK         12.6f   /* 11dB */
+#define R2_MF_THRESHOLD             62974               /* -36.5dBm0 */
+#define R2_MF_TWIST                 5.012f              /* 7dB */
+#define R2_MF_RELATIVE_PEAK         12.589f             /* 11dB */
+#define R2_MF_SAMPLES_PER_BLOCK     133
 #else
-#define BELL_MF_THRESHOLD           1.6e9f
-#define BELL_MF_TWIST               4.0f    /* 6dB */
-#define BELL_MF_RELATIVE_PEAK       12.6f   /* 11dB */
+#define BELL_MF_THRESHOLD           3343803100.0f       /* -30.5dBm0 [((120.0*32768.0/1.4142)*10^((-30.5 - DBM0_MAX_SINE_POWER)/20.0))^2 => 3343803100.0] */
+#define BELL_MF_TWIST               3.981f              /* 6dB [10^(6/10) => 3.981] */
+#define BELL_MF_RELATIVE_PEAK       12.589f             /* 11dB */
+#define BELL_MF_SAMPLES_PER_BLOCK   120
 
-#define R2_MF_THRESHOLD             5.0e8f
-#define R2_MF_TWIST                 5.0f    /* 7dB */
-#define R2_MF_RELATIVE_PEAK         12.6f   /* 11dB */
+#define R2_MF_THRESHOLD             1031766650.0f       /* -36.5dBm0 [((133.0*32768.0/1.4142)*10^((-36.5 - DBM0_MAX_SINE_POWER)/20.0))^2 => 1031766650.0] */
+#define R2_MF_TWIST                 5.012f              /* 7dB */
+#define R2_MF_RELATIVE_PEAK         12.589f             /* 11dB */
+#define R2_MF_SAMPLES_PER_BLOCK     133
 #endif
 
 static goertzel_descriptor_t bell_mf_detect_desc[6];
@@ -210,9 +223,9 @@ static goertzel_descriptor_t bell_mf_detect_desc[6];
 static goertzel_descriptor_t mf_fwd_detect_desc[6];
 static goertzel_descriptor_t mf_back_detect_desc[6];
 
-static const float bell_mf_frequencies[] =
+static const int bell_mf_frequencies[] =
 {
-     700.0f,  900.0f, 1100.0f, 1300.0f, 1500.0f, 1700.0f
+     700,  900, 1100, 1300, 1500, 1700
 };
 
 /* Use the follow characters for the Bell MF special signals:
@@ -223,14 +236,14 @@ static const float bell_mf_frequencies[] =
     ST''' - use 'C' */
 static const char bell_mf_positions[] = "1247C-358A--69*---0B----#";
 
-static const float r2_mf_fwd_frequencies[] =
+static const int r2_mf_fwd_frequencies[] =
 {
-    1380.0f, 1500.0f, 1620.0f, 1740.0f, 1860.0f, 1980.0f
+    1380, 1500, 1620, 1740, 1860, 1980
 };
 
-static const float r2_mf_back_frequencies[] =
+static const int r2_mf_back_frequencies[] =
 {
-    1140.0f, 1020.0f,  900.0f,  780.0f,  660.0f,  540.0f
+    1140, 1020,  900,  780,  660,  540
 };
 
 /* Use codes '1' to 'F' for the R2 signals 1 to 15, except for signal 'A'.
@@ -250,9 +263,9 @@ static void bell_mf_gen_init(void)
     {
         /* Note: The duration of KP is longer than the other signals. */
         make_tone_gen_descriptor(&bell_mf_digit_tones[i++],
-                                 (int) tones->f1,
+                                 tones->f1,
                                  tones->level1,
-                                 (int) tones->f2,
+                                 tones->f2,
                                  tones->level2,
                                  tones->on_time,
                                  tones->off_time,
@@ -265,7 +278,7 @@ static void bell_mf_gen_init(void)
 }
 /*- End of function --------------------------------------------------------*/
 
-int bell_mf_tx(bell_mf_tx_state_t *s, int16_t amp[], int max_samples)
+SPAN_DECLARE(int) bell_mf_tx(bell_mf_tx_state_t *s, int16_t amp[], int max_samples)
 {
     int len;
     const char *cp;
@@ -277,7 +290,7 @@ int bell_mf_tx(bell_mf_tx_state_t *s, int16_t amp[], int max_samples)
         /* Deal with the fragment left over from last time */
         len = tone_gen(&(s->tones), amp, max_samples);
     }
-    while (len < max_samples  &&  (digit = queue_read_byte(&s->queue)) >= 0)
+    while (len < max_samples  &&  (digit = queue_read_byte(&s->queue.queue)) >= 0)
     {
         /* Step to the next digit */
         if ((cp = strchr(bell_mf_tone_codes, digit)) == NULL)
@@ -289,7 +302,7 @@ int bell_mf_tx(bell_mf_tx_state_t *s, int16_t amp[], int max_samples)
 }
 /*- End of function --------------------------------------------------------*/
 
-size_t bell_mf_tx_put(bell_mf_tx_state_t *s, const char *digits, ssize_t len)
+SPAN_DECLARE(int) bell_mf_tx_put(bell_mf_tx_state_t *s, const char *digits, int len)
 {
     size_t space;
 
@@ -301,15 +314,15 @@ size_t bell_mf_tx_put(bell_mf_tx_state_t *s, const char *digits, ssize_t len)
         if ((len = strlen(digits)) == 0)
             return 0;
     }
-    if ((space = queue_free_space(&s->queue)) < len)
-        return len - space;
-    if (queue_write(&s->queue, (const uint8_t *) digits, len) >= 0)
+    if ((space = queue_free_space(&s->queue.queue)) < (size_t) len)
+        return len - (int) space;
+    if (queue_write(&s->queue.queue, (const uint8_t *) digits, len) >= 0)
         return 0;
     return -1;
 }
 /*- End of function --------------------------------------------------------*/
 
-bell_mf_tx_state_t *bell_mf_tx_init(bell_mf_tx_state_t *s)
+SPAN_DECLARE(bell_mf_tx_state_t *) bell_mf_tx_init(bell_mf_tx_state_t *s)
 {
     if (s == NULL)
     {
@@ -322,20 +335,26 @@ bell_mf_tx_state_t *bell_mf_tx_init(bell_mf_tx_state_t *s)
         bell_mf_gen_init();
     tone_gen_init(&(s->tones), &bell_mf_digit_tones[0]);
     s->current_sample = 0;
-    queue_init(&s->queue, MAX_BELL_MF_DIGITS, QUEUE_READ_ATOMIC | QUEUE_WRITE_ATOMIC);
+    queue_init(&s->queue.queue, MAX_BELL_MF_DIGITS, QUEUE_READ_ATOMIC | QUEUE_WRITE_ATOMIC);
     s->tones.current_section = -1;
     return s;
 }
 /*- End of function --------------------------------------------------------*/
 
-int bell_mf_tx_free(bell_mf_tx_state_t *s)
+SPAN_DECLARE(int) bell_mf_tx_release(bell_mf_tx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) bell_mf_tx_free(bell_mf_tx_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int r2_mf_tx(r2_mf_tx_state_t *s, int16_t amp[], int samples)
+SPAN_DECLARE(int) r2_mf_tx(r2_mf_tx_state_t *s, int16_t amp[], int samples)
 {
     int len;
 
@@ -352,7 +371,7 @@ int r2_mf_tx(r2_mf_tx_state_t *s, int16_t amp[], int samples)
 }
 /*- End of function --------------------------------------------------------*/
 
-int r2_mf_tx_put(r2_mf_tx_state_t *s, char digit)
+SPAN_DECLARE(int) r2_mf_tx_put(r2_mf_tx_state_t *s, char digit)
 {
     char *cp;
 
@@ -372,7 +391,7 @@ int r2_mf_tx_put(r2_mf_tx_state_t *s, char digit)
 }
 /*- End of function --------------------------------------------------------*/
 
-r2_mf_tx_state_t *r2_mf_tx_init(r2_mf_tx_state_t *s, int fwd)
+SPAN_DECLARE(r2_mf_tx_state_t *) r2_mf_tx_init(r2_mf_tx_state_t *s, int fwd)
 {
     int i;
     const mf_digit_tones_t *tones;
@@ -391,9 +410,9 @@ r2_mf_tx_state_t *r2_mf_tx_init(r2_mf_tx_state_t *s, int fwd)
         while (tones->on_time)
         {
             make_tone_gen_descriptor(&r2_mf_fwd_digit_tones[i++],
-                                     (int) tones->f1,
+                                     tones->f1,
                                      tones->level1,
-                                     (int) tones->f2,
+                                     tones->f2,
                                      tones->level2,
                                      tones->on_time,
                                      tones->off_time,
@@ -407,9 +426,9 @@ r2_mf_tx_state_t *r2_mf_tx_init(r2_mf_tx_state_t *s, int fwd)
         while (tones->on_time)
         {
             make_tone_gen_descriptor(&r2_mf_back_digit_tones[i++],
-                                     (int) tones->f1,
+                                     tones->f1,
                                      tones->level1,
-                                     (int) tones->f2,
+                                     tones->f2,
                                      tones->level2,
                                      tones->on_time,
                                      tones->off_time,
@@ -425,22 +444,27 @@ r2_mf_tx_state_t *r2_mf_tx_init(r2_mf_tx_state_t *s, int fwd)
 }
 /*- End of function --------------------------------------------------------*/
 
-int r2_mf_tx_free(r2_mf_tx_state_t *s)
+SPAN_DECLARE(int) r2_mf_tx_release(r2_mf_tx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) r2_mf_tx_free(r2_mf_tx_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int bell_mf_rx(bell_mf_rx_state_t *s, const int16_t amp[], int samples)
+SPAN_DECLARE(int) bell_mf_rx(bell_mf_rx_state_t *s, const int16_t amp[], int samples)
 {
-    float energy[6];
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    int32_t famp;
-    int32_t v1;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int32_t energy[6];
+    int16_t xamp;
 #else
-    float famp;
-    float v1;
+    float energy[6];
+    float xamp;
 #endif
     int i;
     int j;
@@ -453,70 +477,22 @@ int bell_mf_rx(bell_mf_rx_state_t *s, const int16_t amp[], int samples)
     hit = 0;
     for (sample = 0;  sample < samples;  sample = limit)
     {
-        if ((samples - sample) >= (120 - s->current_sample))
-            limit = sample + (120 - s->current_sample);
+        if ((samples - sample) >= (BELL_MF_SAMPLES_PER_BLOCK - s->current_sample))
+            limit = sample + (BELL_MF_SAMPLES_PER_BLOCK - s->current_sample);
         else
             limit = samples;
         for (j = sample;  j < limit;  j++)
         {
-            famp = amp[j];
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-            famp >>= 8;
-            /* With GCC 2.95, the following unrolled code seems to take about 35%
-               (rough estimate) as long as a neat little 0-5 loop */
-            v1 = s->out[0].v2;
-            s->out[0].v2 = s->out[0].v3;
-            s->out[0].v3 = ((s->out[0].fac*s->out[0].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[1].v2;
-            s->out[1].v2 = s->out[1].v3;
-            s->out[1].v3 = ((s->out[1].fac*s->out[1].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[2].v2;
-            s->out[2].v2 = s->out[2].v3;
-            s->out[2].v3 = ((s->out[2].fac*s->out[2].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[3].v2;
-            s->out[3].v2 = s->out[3].v3;
-            s->out[3].v3 = ((s->out[3].fac*s->out[3].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[4].v2;
-            s->out[4].v2 = s->out[4].v3;
-            s->out[4].v3 = ((s->out[4].fac*s->out[4].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[5].v2;
-            s->out[5].v2 = s->out[5].v3;
-            s->out[5].v3 = ((s->out[5].fac*s->out[5].v2) >> 12) - v1 + famp;
-#else
-            /* With GCC 2.95, the following unrolled code seems to take about 35%
-               (rough estimate) as long as a neat little 0-5 loop */
-            v1 = s->out[0].v2;
-            s->out[0].v2 = s->out[0].v3;
-            s->out[0].v3 = s->out[0].fac*s->out[0].v2 - v1 + famp;
-    
-            v1 = s->out[1].v2;
-            s->out[1].v2 = s->out[1].v3;
-            s->out[1].v3 = s->out[1].fac*s->out[1].v2 - v1 + famp;
-    
-            v1 = s->out[2].v2;
-            s->out[2].v2 = s->out[2].v3;
-            s->out[2].v3 = s->out[2].fac*s->out[2].v2 - v1 + famp;
-    
-            v1 = s->out[3].v2;
-            s->out[3].v2 = s->out[3].v3;
-            s->out[3].v3 = s->out[3].fac*s->out[3].v2 - v1 + famp;
-    
-            v1 = s->out[4].v2;
-            s->out[4].v2 = s->out[4].v3;
-            s->out[4].v3 = s->out[4].fac*s->out[4].v2 - v1 + famp;
-    
-            v1 = s->out[5].v2;
-            s->out[5].v2 = s->out[5].v3;
-            s->out[5].v3 = s->out[5].fac*s->out[5].v2 - v1 + famp;
-#endif
+            xamp = goertzel_preadjust_amp(amp[j]);
+            goertzel_samplex(&s->out[0], xamp);
+            goertzel_samplex(&s->out[1], xamp);
+            goertzel_samplex(&s->out[2], xamp);
+            goertzel_samplex(&s->out[3], xamp);
+            goertzel_samplex(&s->out[4], xamp);
+            goertzel_samplex(&s->out[5], xamp);
         }
         s->current_sample += (limit - sample);
-        if (s->current_sample < 120)
+        if (s->current_sample < BELL_MF_SAMPLES_PER_BLOCK)
             continue;
 
         /* We are at the end of an MF detection block */
@@ -605,9 +581,9 @@ int bell_mf_rx(bell_mf_rx_state_t *s, const int16_t amp[], int samples)
                 {
                     s->digits[s->current_digits++] = (char) hit;
                     s->digits[s->current_digits] = '\0';
-                    if (s->callback)
+                    if (s->digits_callback)
                     {
-                        s->callback(s->callback_data, s->digits, s->current_digits);
+                        s->digits_callback(s->digits_callback_data, s->digits, s->current_digits);
                         s->current_digits = 0;
                     }
                 }
@@ -622,14 +598,11 @@ int bell_mf_rx(bell_mf_rx_state_t *s, const int16_t amp[], int samples)
         s->hits[2] = s->hits[3];
         s->hits[3] = s->hits[4];
         s->hits[4] = hit;
-        /* Reinitialise the detector for the next block */
-        for (i = 0;  i < 6;  i++)
-            goertzel_reset(&s->out[i]);
         s->current_sample = 0;
     }
-    if (s->current_digits  &&  s->callback)
+    if (s->current_digits  &&  s->digits_callback)
     {
-        s->callback(s->callback_data, s->digits, s->current_digits);
+        s->digits_callback(s->digits_callback_data, s->digits, s->current_digits);
         s->digits[0] = '\0';
         s->current_digits = 0;
     }
@@ -637,7 +610,7 @@ int bell_mf_rx(bell_mf_rx_state_t *s, const int16_t amp[], int samples)
 }
 /*- End of function --------------------------------------------------------*/
 
-size_t bell_mf_rx_get(bell_mf_rx_state_t *s, char *buf, int max)
+SPAN_DECLARE(size_t) bell_mf_rx_get(bell_mf_rx_state_t *s, char *buf, int max)
 {
     if (max > s->current_digits)
         max = s->current_digits;
@@ -652,9 +625,9 @@ size_t bell_mf_rx_get(bell_mf_rx_state_t *s, char *buf, int max)
 }
 /*- End of function --------------------------------------------------------*/
 
-bell_mf_rx_state_t *bell_mf_rx_init(bell_mf_rx_state_t *s,
-                                    void (*callback)(void *user_data, const char *digits, int len),
-                                    void *user_data)
+SPAN_DECLARE(bell_mf_rx_state_t *) bell_mf_rx_init(bell_mf_rx_state_t *s,
+                                                   digits_rx_callback_t callback,
+                                                   void *user_data)
 {
     int i;
     static int initialised = FALSE;
@@ -669,11 +642,11 @@ bell_mf_rx_state_t *bell_mf_rx_init(bell_mf_rx_state_t *s,
     if (!initialised)
     {
         for (i = 0;  i < 6;  i++)
-            make_goertzel_descriptor(&bell_mf_detect_desc[i], bell_mf_frequencies[i], 120);
+            make_goertzel_descriptor(&bell_mf_detect_desc[i], (float) bell_mf_frequencies[i], BELL_MF_SAMPLES_PER_BLOCK);
         initialised = TRUE;
     }
-    s->callback = callback;
-    s->callback_data = user_data;
+    s->digits_callback = callback;
+    s->digits_callback_data = user_data;
 
     s->hits[0] = 
     s->hits[1] =
@@ -691,22 +664,27 @@ bell_mf_rx_state_t *bell_mf_rx_init(bell_mf_rx_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int bell_mf_rx_free(bell_mf_rx_state_t *s)
+SPAN_DECLARE(int) bell_mf_rx_release(bell_mf_rx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) bell_mf_rx_free(bell_mf_rx_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int r2_mf_rx(r2_mf_rx_state_t *s, const int16_t amp[], int samples)
+SPAN_DECLARE(int) r2_mf_rx(r2_mf_rx_state_t *s, const int16_t amp[], int samples)
 {
-    float energy[6];
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    int32_t famp;
-    int32_t v1;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int32_t energy[6];
+    int16_t xamp;
 #else
-    float famp;
-    float v1;
+    float energy[6];
+    float xamp;
 #endif
     int i;
     int j;
@@ -714,77 +692,29 @@ int r2_mf_rx(r2_mf_rx_state_t *s, const int16_t amp[], int samples)
     int best;
     int second_best;
     int hit;
-    int hit_char;
+    int hit_digit;
     int limit;
 
     hit = 0;
-    hit_char = 0;
+    hit_digit = 0;
     for (sample = 0;  sample < samples;  sample = limit)
     {
-        if ((samples - sample) >= (s->samples - s->current_sample))
-            limit = sample + (s->samples - s->current_sample);
+        if ((samples - sample) >= (R2_MF_SAMPLES_PER_BLOCK - s->current_sample))
+            limit = sample + (R2_MF_SAMPLES_PER_BLOCK - s->current_sample);
         else
             limit = samples;
         for (j = sample;  j < limit;  j++)
         {
-            famp = amp[j];
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-            famp >>= 6;
-            /* With GCC 2.95, the following unrolled code seems to take about 35%
-               (rough estimate) as long as a neat little 0-5 loop */
-            v1 = s->out[0].v2;
-            s->out[0].v2 = s->out[0].v3;
-            s->out[0].v3 = ((s->out[0].fac*s->out[0].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[1].v2;
-            s->out[1].v2 = s->out[1].v3;
-            s->out[1].v3 = ((s->out[1].fac*s->out[1].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[2].v2;
-            s->out[2].v2 = s->out[2].v3;
-            s->out[2].v3 = ((s->out[2].fac*s->out[2].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[3].v2;
-            s->out[3].v2 = s->out[3].v3;
-            s->out[3].v3 = ((s->out[3].fac*s->out[3].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[4].v2;
-            s->out[4].v2 = s->out[4].v3;
-            s->out[4].v3 = ((s->out[4].fac*s->out[4].v2) >> 12) - v1 + famp;
-    
-            v1 = s->out[5].v2;
-            s->out[5].v2 = s->out[5].v3;
-            s->out[5].v3 = ((s->out[5].fac*s->out[5].v2) >> 12) - v1 + famp;
-#else    
-            /* With GCC 2.95, the following unrolled code seems to take about 35%
-               (rough estimate) as long as a neat little 0-5 loop */
-            v1 = s->out[0].v2;
-            s->out[0].v2 = s->out[0].v3;
-            s->out[0].v3 = s->out[0].fac*s->out[0].v2 - v1 + famp;
-    
-            v1 = s->out[1].v2;
-            s->out[1].v2 = s->out[1].v3;
-            s->out[1].v3 = s->out[1].fac*s->out[1].v2 - v1 + famp;
-    
-            v1 = s->out[2].v2;
-            s->out[2].v2 = s->out[2].v3;
-            s->out[2].v3 = s->out[2].fac*s->out[2].v2 - v1 + famp;
-    
-            v1 = s->out[3].v2;
-            s->out[3].v2 = s->out[3].v3;
-            s->out[3].v3 = s->out[3].fac*s->out[3].v2 - v1 + famp;
-    
-            v1 = s->out[4].v2;
-            s->out[4].v2 = s->out[4].v3;
-            s->out[4].v3 = s->out[4].fac*s->out[4].v2 - v1 + famp;
-    
-            v1 = s->out[5].v2;
-            s->out[5].v2 = s->out[5].v3;
-            s->out[5].v3 = s->out[5].fac*s->out[5].v2 - v1 + famp;
-#endif
+            xamp = goertzel_preadjust_amp(amp[j]);
+            goertzel_samplex(&s->out[0], xamp);
+            goertzel_samplex(&s->out[1], xamp);
+            goertzel_samplex(&s->out[2], xamp);
+            goertzel_samplex(&s->out[3], xamp);
+            goertzel_samplex(&s->out[4], xamp);
+            goertzel_samplex(&s->out[5], xamp);
         }
         s->current_sample += (limit - sample);
-        if (s->current_sample < s->samples)
+        if (s->current_sample < R2_MF_SAMPLES_PER_BLOCK)
             continue;
 
         /* We are at the end of an MF detection block */
@@ -850,31 +780,34 @@ int r2_mf_rx(r2_mf_rx_state_t *s, const int16_t amp[], int samples)
                 second_best = i;
             }
             best = best*5 + second_best - 1;
-            hit_char = r2_mf_positions[best];
+            hit_digit = r2_mf_positions[best];
         }
         else
         {
-            hit_char = 0;
+            hit_digit = 0;
         }
-
-        /* Reinitialise the detector for the next block */
-        if (s->fwd)
+        if (s->current_digit != hit_digit  &&  s->callback)
         {
-            for (i = 0;  i < 6;  i++)
-                goertzel_reset(&s->out[i]);
+            i = (hit_digit)  ?  -99  :  -10;
+            s->callback(s->callback_data, hit_digit, i, 0);
         }
-        else
-        {
-            for (i = 0;  i < 6;  i++)
-                goertzel_reset(&s->out[i]);
-        }
+        s->current_digit = hit_digit;
         s->current_sample = 0;
     }
-    return hit_char;
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-r2_mf_rx_state_t *r2_mf_rx_init(r2_mf_rx_state_t *s, int fwd)
+SPAN_DECLARE(int) r2_mf_rx_get(r2_mf_rx_state_t *s)
+{
+    return s->current_digit;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(r2_mf_rx_state_t *) r2_mf_rx_init(r2_mf_rx_state_t *s,
+                                               int fwd,
+                                               tone_report_func_t callback,
+                                               void *user_data)
 {
     int i;
     static int initialised = FALSE;
@@ -892,8 +825,8 @@ r2_mf_rx_state_t *r2_mf_rx_init(r2_mf_rx_state_t *s, int fwd)
     {
         for (i = 0;  i < 6;  i++)
         {
-            make_goertzel_descriptor(&mf_fwd_detect_desc[i], r2_mf_fwd_frequencies[i], 133);
-            make_goertzel_descriptor(&mf_back_detect_desc[i], r2_mf_back_frequencies[i], 133);
+            make_goertzel_descriptor(&mf_fwd_detect_desc[i], (float) r2_mf_fwd_frequencies[i], R2_MF_SAMPLES_PER_BLOCK);
+            make_goertzel_descriptor(&mf_back_detect_desc[i], (float) r2_mf_back_frequencies[i], R2_MF_SAMPLES_PER_BLOCK);
         }
         initialised = TRUE;
     }
@@ -907,13 +840,21 @@ r2_mf_rx_state_t *r2_mf_rx_init(r2_mf_rx_state_t *s, int fwd)
         for (i = 0;  i < 6;  i++)
             goertzel_init(&s->out[i], &mf_back_detect_desc[i]);
     }
-    s->samples = 133;
+    s->callback = callback;
+    s->callback_data = user_data;
+    s->current_digit = 0;
     s->current_sample = 0;
     return s;
 }
 /*- End of function --------------------------------------------------------*/
 
-int r2_mf_rx_free(r2_mf_rx_state_t *s)
+SPAN_DECLARE(int) r2_mf_rx_release(r2_mf_rx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) r2_mf_rx_free(r2_mf_rx_state_t *s)
 {
     free(s);
     return 0;

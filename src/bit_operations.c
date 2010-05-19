@@ -10,25 +10,24 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
- *
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: bit_operations.c,v 1.10 2007/06/17 12:42:48 steveu Exp $
+ * $Id: bit_operations.c,v 1.16 2009/02/03 16:28:39 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -42,7 +41,7 @@
 #include "spandsp/telephony.h"
 #include "spandsp/bit_operations.h"
 
-uint16_t bit_reverse16(uint16_t x)
+SPAN_DECLARE(uint16_t) bit_reverse16(uint16_t x)
 {
     x = (x >> 8) | (x << 8);
     x = ((x & 0xF0F0) >> 4) | ((x & 0x0F0F) << 4);
@@ -51,7 +50,7 @@ uint16_t bit_reverse16(uint16_t x)
 }
 /*- End of function --------------------------------------------------------*/
 
-uint32_t bit_reverse32(uint32_t x)
+SPAN_DECLARE(uint32_t) bit_reverse32(uint32_t x)
 {
     x = (x >> 16) | (x << 16);
     x = ((x & 0xFF00FF00) >> 8) | ((x & 0x00FF00FF) << 8);
@@ -61,7 +60,7 @@ uint32_t bit_reverse32(uint32_t x)
 }
 /*- End of function --------------------------------------------------------*/
 
-uint32_t bit_reverse_4bytes(uint32_t x)
+SPAN_DECLARE(uint32_t) bit_reverse_4bytes(uint32_t x)
 {
     x = ((x & 0xF0F0F0F0) >> 4) | ((x & 0x0F0F0F0F) << 4);
     x = ((x & 0xCCCCCCCC) >> 2) | ((x & 0x33333333) << 2);
@@ -70,7 +69,7 @@ uint32_t bit_reverse_4bytes(uint32_t x)
 /*- End of function --------------------------------------------------------*/
 
 #if defined(__x86_64__)
-uint64_t bit_reverse_8bytes(uint64_t x)
+SPAN_DECLARE(uint64_t) bit_reverse_8bytes(uint64_t x)
 {
     x = ((x & 0xF0F0F0F0F0F0F0F0LLU) >> 4) | ((x & 0x0F0F0F0F0F0F0F0FLLU) << 4);
     x = ((x & 0xCCCCCCCCCCCCCCCCLLU) >> 2) | ((x & 0x3333333333333333LLU) << 2);
@@ -79,9 +78,9 @@ uint64_t bit_reverse_8bytes(uint64_t x)
 /*- End of function --------------------------------------------------------*/
 #endif
 
-void bit_reverse(uint8_t to[], const uint8_t from[], int len)
+SPAN_DECLARE(void) bit_reverse(uint8_t to[], const uint8_t from[], int len)
 {
-#if defined(__sparc__)  ||  defined(__sparc)
+#if defined(SPANDSP_MISALIGNED_ACCESS_FAILS)
     int i;
 #else
     const uint8_t *y1;
@@ -96,9 +95,10 @@ void bit_reverse(uint8_t to[], const uint8_t from[], int len)
 #endif
 #endif
 
-#if defined(__sparc__)  ||  defined(__sparc)
-    /* This code work 8 bits at a time, so it works on machines where misalignment
-       is either desperately slow or fails */
+#if defined(SPANDSP_MISALIGNED_ACCESS_FAILS)
+    /* This code works byte by byte, so it works on machines where misalignment
+       is either desperately slow (its a bit slow on practically any machine, but
+       some machines make it desparately slow) or fails. */
     for (i = 0;  i < len;  i++)
         to[i] = bit_reverse8(from[i]);
 #else
@@ -138,7 +138,7 @@ void bit_reverse(uint8_t to[], const uint8_t from[], int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int one_bits32(uint32_t x)
+SPAN_DECLARE(int) one_bits32(uint32_t x)
 {
     x = x - ((x >> 1) & 0x55555555);
     /* We now have 16 2-bit counts */
@@ -158,7 +158,7 @@ int one_bits32(uint32_t x)
 }
 /*- End of function --------------------------------------------------------*/
 
-uint32_t make_mask32(uint32_t x)
+SPAN_DECLARE(uint32_t) make_mask32(uint32_t x)
 {
     x |= (x >> 1);
     x |= (x >> 2);
@@ -169,7 +169,7 @@ uint32_t make_mask32(uint32_t x)
 }
 /*- End of function --------------------------------------------------------*/
 
-uint16_t make_mask16(uint16_t x)
+SPAN_DECLARE(uint16_t) make_mask16(uint16_t x)
 {
     x |= (x >> 1);
     x |= (x >> 2);

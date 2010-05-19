@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: super_tone_tx_tests.c,v 1.17 2007/11/10 11:14:59 steveu Exp $
+ * $Id: super_tone_tx_tests.c,v 1.26 2009/05/30 15:23:14 steveu Exp $
  */
 
 /*! \file */
@@ -31,7 +31,7 @@
 \section super_tone_tx_tests_page_sec_1 What does it do?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -44,7 +44,7 @@
 #include <time.h>
 #include <inttypes.h>
 #include <sys/socket.h>
-#include <audiofile.h>
+#include <sndfile.h>
 
 #if defined(HAVE_LIBXML_XMLMEMORY_H)
 #include <libxml/xmlmemory.h>
@@ -56,12 +56,16 @@
 #include <libxml/xinclude.h>
 #endif
 
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
+
 #include "spandsp.h"
+#include "spandsp-sim.h"
 
 #define OUT_FILE_NAME   "super_tone.wav"
 
-AFfilehandle outhandle;
-AFfilesetup filesetup;
+SNDFILE *outhandle;
 
 super_tone_tx_step_t *tone_tree = NULL;
 
@@ -78,13 +82,10 @@ static void play_tones(super_tone_tx_state_t *tone, int max_samples)
     do
     {
         len = super_tone_tx(tone, amp, 160);
-        outframes = afWriteFrames(outhandle,
-                                  AF_DEFAULT_TRACK,
-                                  amp,
-                                  len);
+        outframes = sf_writef_short(outhandle, amp, len);
         if (outframes != len)
         {
-            fprintf(stderr, "    Error writing wave file\n");
+            fprintf(stderr, "    Error writing audio file\n");
             exit(2);
         }
         total_length += len;
@@ -196,9 +197,9 @@ static void parse_tone_set(xmlDocPtr doc, xmlNsPtr ns, xmlNodePtr cur)
             tone_tree = NULL;
             parse_tone(&tone_tree, doc, ns, cur);
             super_tone_tx_init(&tone, tone_tree);
-printf("Len %p %p %d %d\n", (void *) tone.levels[0], (void *) tone_tree, tone_tree->length, tone_tree->tone);
+//printf("Len %p %p %d %d\n", (void *) tone.levels[0], (void *) tone_tree, tone_tree->length, tone_tree->tone);
             play_tones(&tone, 99999999);
-            super_tone_tx_free(tone_tree);
+            super_tone_tx_free_tone(tone_tree);
         }
         /*endif*/
         cur = cur->next;
@@ -282,17 +283,7 @@ static void get_tone_set(const char *tone_file, const char *set_id)
 
 int main(int argc, char *argv[])
 {
-    if ((filesetup = afNewFileSetup ()) == AF_NULL_FILESETUP)
-    {
-    	fprintf(stderr, "    Failed to create file setup\n");
-        exit(2);
-    }
-    afInitSampleFormat(filesetup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-    afInitRate(filesetup, AF_DEFAULT_TRACK, 8000.0);
-    afInitFileFormat(filesetup, AF_FILE_WAVE);
-    afInitChannels(filesetup, AF_DEFAULT_TRACK, 1);
-
-    if ((outhandle = afOpenFile(OUT_FILE_NAME, "w", filesetup)) == AF_NULL_FILEHANDLE)
+    if ((outhandle = sf_open_telephony_write(OUT_FILE_NAME, 1)) == NULL)
     {
         fprintf(stderr, "    Cannot open audio file '%s'\n", OUT_FILE_NAME);
         exit(2);
@@ -300,12 +291,11 @@ int main(int argc, char *argv[])
 #if defined(HAVE_LIBXML2)
     get_tone_set("../spandsp/global-tones.xml", (argc > 1)  ?  argv[1]  :  "hk");
 #endif
-    if (afCloseFile (outhandle) != 0)
+    if (sf_close (outhandle) != 0)
     {
         fprintf(stderr, "    Cannot close audio file '%s'\n", OUT_FILE_NAME);
         exit(2);
     }
-    afFreeFileSetup(filesetup);
     printf("Done\n");
     return 0;
 }

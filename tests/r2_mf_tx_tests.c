@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: r2_mf_tx_tests.c,v 1.7 2007/11/10 11:14:58 steveu Exp $
+ * $Id: r2_mf_tx_tests.c,v 1.16 2009/05/30 15:23:14 steveu Exp $
  */
 
 /*! \file */
@@ -35,7 +35,10 @@
 ???.
 */
 
-#ifdef HAVE_CONFIG_H
+/* Enable the following definition to enable direct probing into the FAX structures */
+//#define WITH_SPANDSP_INTERNALS
+
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -44,9 +47,14 @@
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
-#include <audiofile.h>
+#include <sndfile.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
+#include "spandsp-sim.h"
 
 #define OUTPUT_FILE_NAME    "r2_mf.wav"
 
@@ -55,28 +63,14 @@ int main(int argc, char *argv[])
     r2_mf_tx_state_t gen;
     int16_t amp[1000];
     int len;
-    AFfilehandle outhandle;
-    AFfilesetup filesetup;
+    SNDFILE *outhandle;
     int outframes;
     int digit;
     const char *digits = "0123456789BCDEF";
 
-    filesetup = afNewFileSetup();
-    if (filesetup == AF_NULL_FILESETUP)
+    if ((outhandle = sf_open_telephony_write(OUTPUT_FILE_NAME, 1)) == NULL)
     {
-        fprintf(stderr, "    Failed to create file setup\n");
-        exit(2);
-    }
-    afInitSampleFormat(filesetup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-    afInitRate(filesetup, AF_DEFAULT_TRACK, 8000.0);
-    //afInitCompression(filesetup, AF_DEFAULT_TRACK, AF_COMPRESSION_G711_ALAW);
-    afInitFileFormat(filesetup, AF_FILE_WAVE);
-    afInitChannels(filesetup, AF_DEFAULT_TRACK, 1);
-
-    outhandle = afOpenFile(OUTPUT_FILE_NAME, "w", filesetup);
-    if (outhandle == AF_NULL_FILEHANDLE)
-    {
-        fprintf(stderr, "    Cannot open wave file '%s'\n", OUTPUT_FILE_NAME);
+        fprintf(stderr, "    Cannot open audio file '%s'\n", OUTPUT_FILE_NAME);
         exit(2);
     }
 
@@ -87,22 +81,12 @@ int main(int argc, char *argv[])
         len = r2_mf_tx(&gen, amp, 1000);
         printf("Generated %d samples of %c\n", len, digits[digit]);
         if (len > 0)
-        {
-            outframes = afWriteFrames(outhandle,
-                                      AF_DEFAULT_TRACK,
-                                      amp,
-                                      len);
-        }
+            outframes = sf_writef_short(outhandle, amp, len);
         r2_mf_tx_put(&gen, 0);
         len = r2_mf_tx(&gen, amp, 1000);
         printf("Generated %d samples\n", len);
         if (len > 0)
-        {
-            outframes = afWriteFrames(outhandle,
-                                      AF_DEFAULT_TRACK,
-                                      amp,
-                                      len);
-        }
+            outframes = sf_writef_short(outhandle, amp, len);
     }
 
     r2_mf_tx_init(&gen, TRUE);
@@ -112,30 +96,19 @@ int main(int argc, char *argv[])
         len = r2_mf_tx(&gen, amp, 1000);
         printf("Generated %d samples of %c\n", len, digits[digit]);
         if (len > 0)
-        {
-            outframes = afWriteFrames(outhandle,
-                                      AF_DEFAULT_TRACK,
-                                      amp,
-                                      len);
-        }
+            outframes = sf_writef_short(outhandle, amp, len);
         r2_mf_tx_put(&gen, 0);
         len = r2_mf_tx(&gen, amp, 1000);
         printf("Generated %d samples\n", len);
         if (len > 0)
-        {
-            outframes = afWriteFrames(outhandle,
-                                      AF_DEFAULT_TRACK,
-                                      amp,
-                                      len);
-        }
+            outframes = sf_writef_short(outhandle, amp, len);
     }
 
-    if (afCloseFile(outhandle) != 0)
+    if (sf_close(outhandle) != 0)
     {
-        fprintf(stderr, "    Cannot close wave file '%s'\n", OUTPUT_FILE_NAME);
+        fprintf(stderr, "    Cannot close audio file '%s'\n", OUTPUT_FILE_NAME);
         exit (2);
     }
-    afFreeFileSetup(filesetup);
 
     return  0;
 }

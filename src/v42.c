@@ -10,27 +10,27 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v42.c,v 1.37 2007/11/30 12:20:35 steveu Exp $
+ * $Id: v42.c,v 1.51 2009/11/04 15:52:06 steveu Exp $
  */
 
 /* THIS IS A WORK IN PROGRESS. IT IS NOT FINISHED. */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdio.h>
@@ -46,6 +46,11 @@
 #include "spandsp/schedule.h"
 #include "spandsp/queue.h"
 #include "spandsp/v42.h"
+
+#include "spandsp/private/logging.h"
+#include "spandsp/private/schedule.h"
+#include "spandsp/private/hdlc.h"
+#include "spandsp/private/v42.h"
 
 #if !defined(FALSE)
 #define FALSE   0
@@ -84,8 +89,8 @@
 static void t401_expired(span_sched_state_t *s, void *user_data);
 static void t403_expired(span_sched_state_t *s, void *user_data);
 
-void lapm_reset(lapm_state_t *s);
-void lapm_restart(lapm_state_t *s);
+SPAN_DECLARE(void) lapm_reset(lapm_state_t *s);
+SPAN_DECLARE(void) lapm_restart(lapm_state_t *s);
 
 static void lapm_link_down(lapm_state_t *s);
 
@@ -351,7 +356,7 @@ fprintf(stderr, "Setting T401 d [%p]\n", (void *) s);
 }
 /*- End of function --------------------------------------------------------*/
 
-const char *lapm_status_to_str(int status)
+SPAN_DECLARE(const char *) lapm_status_to_str(int status)
 {
     switch (status)
     {
@@ -377,38 +382,38 @@ const char *lapm_status_to_str(int status)
 }
 /*- End of function --------------------------------------------------------*/
 
-int lapm_tx(lapm_state_t *s, const void *buf, int len)
+SPAN_DECLARE(int) lapm_tx(lapm_state_t *s, const void *buf, int len)
 {
     return queue_write(s->tx_queue, buf, len);
 }
 /*- End of function --------------------------------------------------------*/
 
-int lapm_release(lapm_state_t *s)
+SPAN_DECLARE(int) lapm_release(lapm_state_t *s)
 {
     s->state = LAPM_RELEASE;
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int lapm_loopback(lapm_state_t *s, int enable)
+SPAN_DECLARE(int) lapm_loopback(lapm_state_t *s, int enable)
 {
     s->state = LAPM_TEST;
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int lapm_break(lapm_state_t *s, int enable)
+SPAN_DECLARE(int) lapm_break(lapm_state_t *s, int enable)
 {
     s->state = LAPM_SIGNAL;
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int lapm_tx_iframe(lapm_state_t *s, const void *buf, int len, int cr)
+SPAN_DECLARE(int) lapm_tx_iframe(lapm_state_t *s, const void *buf, int len, int cr)
 {
     lapm_frame_queue_t *f;
 
-    if ((f = malloc(sizeof(lapm_frame_queue_t) + len + 4)) == NULL)
+    if ((f = malloc(sizeof(*f) + len + 4)) == NULL)
     {
         span_log(&s->logging, SPAN_LOG_FLOW, "Out of memory\n");
         return -1;
@@ -475,7 +480,7 @@ fprintf(stderr, "Setting T403 f\n");
 }
 /*- End of function --------------------------------------------------------*/
 
-void lapm_dump(lapm_state_t *s, const uint8_t *frame, int len, int showraw, int txrx)
+SPAN_DECLARE(void) lapm_dump(lapm_state_t *s, const uint8_t *frame, int len, int showraw, int txrx)
 {
     const char *type;
     char direction_tag[2];
@@ -662,7 +667,7 @@ static void lapm_link_down(lapm_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-void lapm_reset(lapm_state_t *s)
+SPAN_DECLARE(void) lapm_reset(lapm_state_t *s)
 {
     lapm_frame_queue_t *f;
     lapm_frame_queue_t *p;
@@ -704,7 +709,7 @@ fprintf(stderr, "Deleting T403 e %d\n", s->t403_timer);
 }
 /*- End of function --------------------------------------------------------*/
 
-void lapm_receive(void *user_data, const uint8_t *frame, int len, int ok)
+SPAN_DECLARE_NONSTD(void) lapm_receive(void *user_data, const uint8_t *frame, int len, int ok)
 {
     lapm_state_t *s;
     lapm_frame_queue_t *f;
@@ -721,31 +726,7 @@ fprintf(stderr, "LAPM receive %d %d\n", ok, len);
     if (len < 0)
     {
         /* Special conditions */
-        switch (len)
-        {
-        case PUTBIT_TRAINING_FAILED:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Training failed\n");
-            break;
-        case PUTBIT_TRAINING_SUCCEEDED:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Training succeeded\n");
-            break;
-        case PUTBIT_CARRIER_UP:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Carrier up\n");
-            break;
-        case PUTBIT_CARRIER_DOWN:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Carrier down\n");
-            break;
-        case PUTBIT_FRAMING_OK:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Framing OK\n");
-            break;
-        case PUTBIT_ABORT:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Abort\n");
-            break;
-        default:
-            span_log(&s->logging, SPAN_LOG_DEBUG, "Eh!\n");
-            break;
-        }
-        /*endswitch*/
+        span_log(&s->logging, SPAN_LOG_DEBUG, "V.42 rx status is %s (%d)\n", signal_status_to_str(len), len);
         return;
     }
     /*endif*/
@@ -1087,7 +1068,7 @@ static void lapm_hdlc_underflow(void *user_data)
 }
 /*- End of function --------------------------------------------------------*/
 
-void lapm_restart(lapm_state_t *s)
+SPAN_DECLARE(void) lapm_restart(lapm_state_t *s)
 {
 #if 0
     if (s->state != LAPM_RELEASE)
@@ -1111,11 +1092,13 @@ void lapm_restart(lapm_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
+#if 0
 static void lapm_init(lapm_state_t *s)
 {
     lapm_restart(s);
 }
 /*- End of function --------------------------------------------------------*/
+#endif
 
 static void negotiation_rx_bit(v42_state_t *s, int new_bit)
 {
@@ -1131,19 +1114,7 @@ static void negotiation_rx_bit(v42_state_t *s, int new_bit)
     if (new_bit < 0)
     {
         /* Special conditions */
-        switch (new_bit)
-        {
-        case PUTBIT_CARRIER_UP:
-            break;
-        case PUTBIT_CARRIER_DOWN:
-        case PUTBIT_TRAINING_SUCCEEDED:
-        case PUTBIT_TRAINING_FAILED:
-            break;
-        default:
-            span_log(&s->logging, SPAN_LOG_WARNING, "Unexpected special 'bit' code %d\n", new_bit);
-            break;
-        }
-        /*endswitch*/
+        span_log(&s->logging, SPAN_LOG_DEBUG, "V.42 rx status is %s (%d)\n", signal_status_to_str(new_bit), new_bit);
         return;
     }
     /*endif*/
@@ -1167,11 +1138,11 @@ static void negotiation_rx_bit(v42_state_t *s, int new_bit)
             break;
         /*endif*/
         s->rxstream &= 0x3FF;
-        if (s->caller  &&  s->rxstream == 0x145)
+        if (s->calling_party  &&  s->rxstream == 0x145)
         {
             s->rx_negotiation_step++;
         }
-        else if (!s->caller  &&  s->rxstream == 0x111)
+        else if (!s->calling_party  &&  s->rxstream == 0x111)
         {
             s->rx_negotiation_step++;
         }
@@ -1203,15 +1174,15 @@ static void negotiation_rx_bit(v42_state_t *s, int new_bit)
             break;
         /*endif*/
         s->rxstream &= 0x3FF;
-        if (s->caller  &&  s->rxstream == 0x185)
+        if (s->calling_party  &&  s->rxstream == 0x185)
         {
             s->rx_negotiation_step++;
         }
-        else if (s->caller  &&  s->rxstream == 0x001)
+        else if (s->calling_party  &&  s->rxstream == 0x001)
         {
             s->rx_negotiation_step++;
         }
-        else if (!s->caller  &&  s->rxstream == 0x113)
+        else if (!s->calling_party  &&  s->rxstream == 0x113)
         {
             s->rx_negotiation_step++;
         }
@@ -1235,7 +1206,7 @@ static void negotiation_rx_bit(v42_state_t *s, int new_bit)
             {
                 /* HIT */
                 s->rx_negotiation_step++;
-                if (s->caller)
+                if (s->calling_party)
                 {
                     if (s->t400_timer >= 0)
                     {
@@ -1281,7 +1252,7 @@ static int v42_support_negotiation_tx_bit(v42_state_t *s)
 {
     int bit;
 
-    if (s->caller)
+    if (s->calling_party)
     {
         if (s->txbits <= 0)
         {
@@ -1345,7 +1316,7 @@ fprintf(stderr, "Deleting T400 i %d\n", s->t400_timer);
 }
 /*- End of function --------------------------------------------------------*/
 
-void v42_rx_bit(void *user_data, int bit)
+SPAN_DECLARE(void) v42_rx_bit(void *user_data, int bit)
 {
     v42_state_t *s;
 
@@ -1358,7 +1329,7 @@ void v42_rx_bit(void *user_data, int bit)
 }
 /*- End of function --------------------------------------------------------*/
 
-int v42_tx_bit(void *user_data)
+SPAN_DECLARE(int) v42_tx_bit(void *user_data)
 {
     v42_state_t *s;
     int bit;
@@ -1373,18 +1344,18 @@ int v42_tx_bit(void *user_data)
 }
 /*- End of function --------------------------------------------------------*/
 
-void v42_set_status_callback(v42_state_t *s, v42_status_func_t callback, void *user_data)
+SPAN_DECLARE(void) v42_set_status_callback(v42_state_t *s, v42_status_func_t callback, void *user_data)
 {
     s->lapm.status_callback = callback;
     s->lapm.status_callback_user_data = user_data;
 }
 /*- End of function --------------------------------------------------------*/
 
-void v42_restart(v42_state_t *s)
+SPAN_DECLARE(void) v42_restart(v42_state_t *s)
 {
     span_schedule_init(&s->lapm.sched);
 
-    s->lapm.we_are_originator = s->caller;
+    s->lapm.we_are_originator = s->calling_party;
     lapm_restart(&s->lapm);
     if (s->detect)
     {
@@ -1408,7 +1379,7 @@ fprintf(stderr, "Setting T400 i\n");
 }
 /*- End of function --------------------------------------------------------*/
 
-v42_state_t *v42_init(v42_state_t *s, int caller, int detect, v42_frame_handler_t frame_handler, void *user_data)
+SPAN_DECLARE(v42_state_t *) v42_init(v42_state_t *s, int calling_party, int detect, v42_frame_handler_t frame_handler, void *user_data)
 {
     int alloced;
     
@@ -1423,7 +1394,7 @@ v42_state_t *v42_init(v42_state_t *s, int caller, int detect, v42_frame_handler_
         alloced = TRUE;
     }
     memset(s, 0, sizeof(*s));
-    s->caller = caller;
+    s->calling_party = calling_party;
     s->detect = detect;
     s->lapm.iframe_receive = frame_handler;
     s->lapm.iframe_receive_user_data = user_data;
@@ -1446,7 +1417,13 @@ v42_state_t *v42_init(v42_state_t *s, int caller, int detect, v42_frame_handler_
 }
 /*- End of function --------------------------------------------------------*/
 
-int v42_release(v42_state_t *s)
+SPAN_DECLARE(int) v42_release(v42_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) v42_free(v42_state_t *s)
 {
     free(s);
     return 0;

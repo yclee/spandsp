@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: logging.c,v 1.22 2006/11/30 15:41:47 steveu Exp $
+ * $Id: logging.c,v 1.32 2009/02/10 17:44:18 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <limits.h>
@@ -46,11 +46,14 @@
 #include "spandsp/telephony.h"
 #include "spandsp/logging.h"
 
+#include "spandsp/private/logging.h"
+
 static void default_message_handler(int level, const char *text);
 
-static message_handler_func_t __span_message = *default_message_handler;
+static message_handler_func_t __span_message = &default_message_handler;
 static error_handler_func_t __span_error = NULL;
 
+/* Note that this list *must* match the enum definition in logging.h */
 static const char *severities[] =
 {
     "NONE",
@@ -72,7 +75,7 @@ static void default_message_handler(int level, const char *text)
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_log_test(logging_state_t *s, int level)
+SPAN_DECLARE(int) span_log_test(logging_state_t *s, int level)
 {
     if (s  &&  (s->level & SPAN_LOG_SEVERITY_MASK) >= (level & SPAN_LOG_SEVERITY_MASK))
         return TRUE;
@@ -80,7 +83,7 @@ int span_log_test(logging_state_t *s, int level)
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_log(logging_state_t *s, int level, const char *format, ...)
+SPAN_DECLARE(int) span_log(logging_state_t *s, int level, const char *format, ...)
 {
     char msg[1024 + 1];
     va_list arg_ptr;
@@ -100,31 +103,29 @@ int span_log(logging_state_t *s, int level, const char *format, ...)
                 gettimeofday(&nowx, NULL);
                 now = nowx.tv_sec;
                 tim = gmtime(&now);
-                snprintf(msg + len,
-                         1024 - len,
-                         "%04d/%02d/%02d %02d:%02d:%02d.%03d ",
-                         tim->tm_year + 1900,
-                         tim->tm_mon + 1,
-                         tim->tm_mday,
-                         tim->tm_hour,
-                         tim->tm_min,
-                         tim->tm_sec,
-                         (int) nowx.tv_usec/1000);
-                len += (int) strlen(msg + len);
+                len += snprintf(msg + len,
+                                1024 - len,
+                                "%04d/%02d/%02d %02d:%02d:%02d.%03d ",
+                                tim->tm_year + 1900,
+                                tim->tm_mon + 1,
+                                tim->tm_mday,
+                                tim->tm_hour,
+                                tim->tm_min,
+                                tim->tm_sec,
+                                (int) nowx.tv_usec/1000);
             }
             /*endif*/
             if ((s->level & SPAN_LOG_SHOW_SAMPLE_TIME))
             {
                 now = s->elapsed_samples/s->samples_per_second;
                 tim = gmtime(&now);
-                snprintf(msg + len,
-                         1024 - len,
-                         "%02d:%02d:%02d.%03d ",
-                         tim->tm_hour,
-                         tim->tm_min,
-                         tim->tm_sec,
-                         (int) (s->elapsed_samples%s->samples_per_second)*1000/s->samples_per_second);
-                len += (int) strlen(msg + len);
+                len += snprintf(msg + len,
+                                1024 - len,
+                                "%02d:%02d:%02d.%03d ",
+                                tim->tm_hour,
+                                tim->tm_min,
+                                tim->tm_sec,
+                                (int) (s->elapsed_samples%s->samples_per_second)*1000/s->samples_per_second);
             }
             /*endif*/
             if ((s->level & SPAN_LOG_SHOW_SEVERITY)  &&  (level & SPAN_LOG_SEVERITY_MASK) <= SPAN_LOG_DEBUG_3)
@@ -156,7 +157,7 @@ int span_log(logging_state_t *s, int level, const char *format, ...)
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_log_buf(logging_state_t *s, int level, const char *tag, const uint8_t *buf, int len)
+SPAN_DECLARE(int) span_log_buf(logging_state_t *s, int level, const char *tag, const uint8_t *buf, int len)
 {
     char msg[1024];
     int i;
@@ -176,8 +177,77 @@ int span_log_buf(logging_state_t *s, int level, const char *tag, const uint8_t *
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_log_init(logging_state_t *s, int level, const char *tag)
+SPAN_DECLARE(int) span_log_set_level(logging_state_t *s, int level)
 {
+    s->level = level;
+
+    return  0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) span_log_set_tag(logging_state_t *s, const char *tag)
+{
+    s->tag = tag;
+
+    return  0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) span_log_set_protocol(logging_state_t *s, const char *protocol)
+{
+    s->protocol = protocol;
+
+    return  0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) span_log_set_sample_rate(logging_state_t *s, int samples_per_second)
+{
+    s->samples_per_second = samples_per_second;
+
+    return  0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) span_log_bump_samples(logging_state_t *s, int samples)
+{
+    s->elapsed_samples += samples;
+
+    return  0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) span_log_set_message_handler(logging_state_t *s, message_handler_func_t func)
+{
+    s->span_message = func;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) span_log_set_error_handler(logging_state_t *s, error_handler_func_t func)
+{
+    s->span_error = func;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) span_set_message_handler(message_handler_func_t func)
+{
+    __span_message = func;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) span_set_error_handler(error_handler_func_t func)
+{
+    __span_error = func;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(logging_state_t *) span_log_init(logging_state_t *s, int level, const char *tag)
+{
+    if (s == NULL)
+    {
+        if ((s = (logging_state_t *) malloc(sizeof(*s))) == NULL)
+            return NULL;
+    }
     s->span_error = __span_error;
     s->span_message = __span_message;
     s->level = level;
@@ -186,71 +256,21 @@ int span_log_init(logging_state_t *s, int level, const char *tag)
     s->samples_per_second = SAMPLE_RATE;
     s->elapsed_samples = 0;
 
-    return  0;
+    return s;
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_log_set_level(logging_state_t *s, int level)
+SPAN_DECLARE(int) span_log_release(logging_state_t *s)
 {
-    s->level = level;
-
-    return  0;
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_log_set_tag(logging_state_t *s, const char *tag)
+SPAN_DECLARE(int) span_log_free(logging_state_t *s)
 {
-    s->tag = tag;
-
-    return  0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int span_log_set_protocol(logging_state_t *s, const char *protocol)
-{
-    s->protocol = protocol;
-
-    return  0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int span_log_set_sample_rate(logging_state_t *s, int samples_per_second)
-{
-    s->samples_per_second = samples_per_second;
-
-    return  0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int span_log_bump_samples(logging_state_t *s, int samples)
-{
-    s->elapsed_samples += samples;
-
-    return  0;
-}
-/*- End of function --------------------------------------------------------*/
-
-void span_log_set_message_handler(logging_state_t *s, message_handler_func_t func)
-{
-    s->span_message = func;
-}
-/*- End of function --------------------------------------------------------*/
-
-void span_log_set_error_handler(logging_state_t *s, error_handler_func_t func)
-{
-    s->span_error = func;
-}
-/*- End of function --------------------------------------------------------*/
-
-void span_set_message_handler(message_handler_func_t func)
-{
-    __span_message = func;
-}
-/*- End of function --------------------------------------------------------*/
-
-void span_set_error_handler(error_handler_func_t func)
-{
-    __span_error = func;
+    if (s)
+        free(s);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

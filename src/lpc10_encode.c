@@ -10,27 +10,27 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * This code is based on the U.S. Department of Defense reference
  * implementation of the LPC-10 2400 bps Voice Coder. They do not
  * exert copyright claims on their code, and it may be freely used.
  *
- * $Id: lpc10_encode.c,v 1.17 2007/11/26 13:28:59 steveu Exp $
+ * $Id: lpc10_encode.c,v 1.28 2009/02/10 13:06:46 steveu Exp $
  */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -43,10 +43,12 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
 #include "spandsp/dc_restore.h"
 #include "spandsp/lpc10.h"
+#include "spandsp/private/lpc10.h"
 
 #include "lpc10_encdecs.h"
 
@@ -264,7 +266,7 @@ static void high_pass_100hz(lpc10_encode_state_t *s, float speech[], int start, 
 }
 /*- End of function --------------------------------------------------------*/
 
-lpc10_encode_state_t *lpc10_encode_init(lpc10_encode_state_t *s, int error_correction)
+SPAN_DECLARE(lpc10_encode_state_t *) lpc10_encode_init(lpc10_encode_state_t *s, int error_correction)
 {
     int i;
     int j;
@@ -361,14 +363,20 @@ lpc10_encode_state_t *lpc10_encode_init(lpc10_encode_state_t *s, int error_corre
 }
 /*- End of function --------------------------------------------------------*/
 
-int lpc10_encode_release(lpc10_encode_state_t *s)
+SPAN_DECLARE(int) lpc10_encode_release(lpc10_encode_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) lpc10_encode_free(lpc10_encode_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int lpc10_encode(lpc10_encode_state_t *s, uint8_t code[], const int16_t amp[], int quant)
+SPAN_DECLARE(int) lpc10_encode(lpc10_encode_state_t *s, uint8_t code[], const int16_t amp[], int len)
 {
     int32_t voice[2];
     int32_t pitch;
@@ -379,7 +387,8 @@ int lpc10_encode(lpc10_encode_state_t *s, uint8_t code[], const int16_t amp[], i
     int i;
     int j;
 
-    for (i = 0;  i < quant;  i++)
+    len /= LPC10_SAMPLES_PER_FRAME;
+    for (i = 0;  i < len;  i++)
     {
         for (j = 0;  j < LPC10_SAMPLES_PER_FRAME;  j++)
             speech[j] = (float) amp[i*LPC10_SAMPLES_PER_FRAME + j]/32768.0f;
@@ -388,7 +397,7 @@ int lpc10_encode(lpc10_encode_state_t *s, uint8_t code[], const int16_t amp[], i
         encode(s, &frame, voice, pitch, rms, rc);
         lpc10_pack(s, &code[7*i], &frame);
     }
-    return quant*7;
+    return len*7;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

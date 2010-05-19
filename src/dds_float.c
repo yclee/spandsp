@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: dds_float.c,v 1.3 2007/09/06 12:24:54 steveu Exp $
+ * $Id: dds_float.c,v 1.11 2009/02/03 16:28:39 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdio.h>
@@ -39,6 +39,7 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
 #include "spandsp/complex.h"
@@ -2101,37 +2102,37 @@ static const float sine_table[SINELEN] =
     -0.00306796f
 };
 
-int32_t dds_phase_ratef(float frequency)
+SPAN_DECLARE(int32_t) dds_phase_ratef(float frequency)
 {
     return (int32_t) (frequency*65536.0f*65536.0f/SAMPLE_RATE);
 }
 /*- End of function --------------------------------------------------------*/
 
-float dds_frequencyf(int32_t phase_rate)
+SPAN_DECLARE(float) dds_frequencyf(int32_t phase_rate)
 {
     return (float) phase_rate*(float) SAMPLE_RATE/(65536.0f*65536.0f);
 }
 /*- End of function --------------------------------------------------------*/
 
-float dds_scaling_dbm0f(float level)
+SPAN_DECLARE(float) dds_scaling_dbm0f(float level)
 {
     return powf(10.0f, (level - DBM0_MAX_SINE_POWER)/20.0f)*32767.0f;
 }
 /*- End of function --------------------------------------------------------*/
 
-float dds_scaling_dbovf(float level)
+SPAN_DECLARE(float) dds_scaling_dbovf(float level)
 {
     return powf(10.0f, (level - DBOV_MAX_SINE_POWER)/20.0f)*32767.0f;
 }
 /*- End of function --------------------------------------------------------*/
 
-void dds_advancef(uint32_t *phase_acc, int32_t phase_rate)
+SPAN_DECLARE(void) dds_advancef(uint32_t *phase_acc, int32_t phase_rate)
 {
     *phase_acc += phase_rate;
 }
 /*- End of function --------------------------------------------------------*/
 
-float ddsf(uint32_t *phase_acc, int32_t phase_rate)
+SPAN_DECLARE(float) ddsf(uint32_t *phase_acc, int32_t phase_rate)
 {
     float amp;
 
@@ -2141,7 +2142,13 @@ float ddsf(uint32_t *phase_acc, int32_t phase_rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-float dds_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t phase)
+SPAN_DECLARE(float) dds_lookupf(uint32_t phase)
+{
+    return sine_table[phase >> (32 - SLENK)];
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(float) dds_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t phase)
 {
     float amp;
 
@@ -2151,7 +2158,7 @@ float dds_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t pha
 }
 /*- End of function --------------------------------------------------------*/
 
-complexf_t dds_complexf(uint32_t *phase_acc, int32_t phase_rate)
+SPAN_DECLARE(complexf_t) dds_complexf(uint32_t *phase_acc, int32_t phase_rate)
 {
     complexf_t amp;
 
@@ -2162,7 +2169,14 @@ complexf_t dds_complexf(uint32_t *phase_acc, int32_t phase_rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-complexf_t dds_complex_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t phase)
+SPAN_DECLARE(complexf_t) dds_lookup_complexf(uint32_t phase)
+{
+    return complex_setf(sine_table[(phase + (1 << 30)) >> (32 - SLENK)],
+                        sine_table[phase >> (32 - SLENK)]);
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexf_t) dds_complex_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t phase)
 {
     complexf_t amp;
 

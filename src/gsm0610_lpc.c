@@ -10,28 +10,28 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * This code is based on the widely used GSM 06.10 code available from
  * http://kbs.cs.tu-berlin.de/~jutta/toast.html
  *
- * $Id: gsm0610_lpc.c,v 1.15 2007/08/20 15:22:22 steveu Exp $
+ * $Id: gsm0610_lpc.c,v 1.29 2009/02/05 15:57:27 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <assert.h>
@@ -42,12 +42,15 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <stdlib.h>
+#include <memory.h>
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/bitstream.h"
 #include "spandsp/bit_operations.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/saturated.h"
 #include "spandsp/vector_int.h"
 #include "spandsp/gsm0610.h"
 
@@ -131,14 +134,78 @@ static int16_t gsm_div(int16_t num, int16_t denom)
 }
 /*- End of function --------------------------------------------------------*/
 
-#if defined(__GNUC__)  &&  defined(__i386__)
-void gsm0610_vec_vsraw(const int16_t *p, int n, int bits)
+#if defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX)
+static void gsm0610_vec_vsraw(const int16_t *p, int n, int bits)
 {
     static const int64_t ones = 0x0001000100010001LL;
 
     if (n == 0)
         return;
     /*endif*/
+#if defined(__x86_64__)
+    __asm__ __volatile__(
+        " leaq -16(%%rsi,%%rax,2),%%rdx;\n"         /* edx = top - 16 */
+        " emms;\n"
+        " movd %%ecx,%%mm3;\n"
+        " movq %[ones],%%mm2;\n"
+        " psllw %%mm3,%%mm2;\n"
+        " psrlw $1,%%mm2;\n"
+        " cmpq %%rdx,%%rsi;"
+        " ja 4f;\n"
+
+         " .p2align 2;\n"
+        /* 8 words per iteration */
+        "6:\n"
+        " movq (%%rsi),%%mm0;\n"
+        " movq 8(%%rsi),%%mm1;\n"
+        " paddsw %%mm2,%%mm0;\n"
+        " psraw %%mm3,%%mm0;\n"
+        " paddsw %%mm2,%%mm1;\n"
+        " psraw %%mm3,%%mm1;\n"
+        " movq %%mm0,(%%rsi);\n"
+        " movq %%mm1,8(%%rsi);\n"
+        " addq $16,%%rsi;\n"
+        " cmpq %%rdx,%%rsi;\n"
+        " jbe 6b;\n"
+
+        " .p2align 2;\n"
+        "4:\n"
+        " addq $12,%%rdx;\n"                        /* now edx = top-4 */
+        " cmpq %%rdx,%%rsi;\n"
+        " ja 3f;\n"
+
+        " .p2align 2;\n"
+        /* do up to 6 words, two per iteration */
+        "5:\n"
+        " movd (%%rsi),%%mm0;\n"
+        " paddsw %%mm2,%%mm0;\n"
+        " psraw %%mm3,%%mm0;\n"
+        " movd %%mm0,(%%rsi);\n"
+        " addq $4,%%rsi;\n"
+        " cmpq %%rdx,%%rsi;\n"
+        " jbe 5b;\n"
+
+        " .p2align 2;\n"
+        "3:\n"
+        " addq $2,%%rdx;\n"                        /* now edx = top-2 */
+        " cmpq %%rdx,%%rsi;\n"
+        " ja 2f;\n"
+        
+        " movzwl (%%rsi),%%eax;\n"
+        " movd %%eax,%%mm0;\n"
+        " paddsw %%mm2,%%mm0;\n"
+        " psraw %%mm3,%%mm0;\n"
+        " movd %%mm0,%%eax;\n"
+        " movw %%ax,(%%rsi);\n"
+
+        " .p2align 2;\n"
+        "2:\n"
+        " emms;\n"
+        :
+        : "S" (p), "a" (n), "c" (bits), [ones] "m" (ones)
+        : "edx"
+    );
+#else
     __asm__ __volatile__(
         " leal -16(%%esi,%%eax,2),%%edx;\n"         /* edx = top - 16 */
         " emms;\n"
@@ -173,7 +240,7 @@ void gsm0610_vec_vsraw(const int16_t *p, int n, int bits)
         " .p2align 2;\n"
         /* do up to 6 words, two per iteration */
         "5:\n"
-        " movd  (%%esi),%%mm0;\n"
+        " movd (%%esi),%%mm0;\n"
         " paddsw %%mm2,%%mm0;\n"
         " psraw %%mm3,%%mm0;\n"
         " movd %%mm0,(%%esi);\n"
@@ -201,6 +268,7 @@ void gsm0610_vec_vsraw(const int16_t *p, int n, int bits)
         : "S" (p), "a" (n), "c" (bits), [ones] "m" (ones)
         : "edx"
     );
+#endif
 }
 /*- End of function --------------------------------------------------------*/
 #endif
@@ -211,7 +279,7 @@ static void autocorrelation(int16_t amp[GSM0610_FRAME_LEN], int32_t L_ACF[9])
     int k;
     int16_t smax;
     int16_t scalauto;
-#if !(defined(__GNUC__)  &&  defined(__i386__))
+#if !(defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX))
     int i;
     int temp;
     int16_t *sp;
@@ -223,12 +291,12 @@ static void autocorrelation(int16_t amp[GSM0610_FRAME_LEN], int32_t L_ACF[9])
 
     /* Dynamic scaling of the array  s[0..159] */
     /* Search for the maximum. */
-#if defined(__GNUC__)  &&  defined(__i386__)
+#if defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX)
     smax = saturate(vec_min_maxi16(amp, GSM0610_FRAME_LEN, NULL));
 #else
     for (smax = 0, k = 0;  k < GSM0610_FRAME_LEN;  k++)
     {
-        temp = gsm_abs(amp[k]);
+        temp = saturated_abs16(amp[k]);
         if (temp > smax)
             smax = (int16_t) temp;
         /*endif*/
@@ -249,7 +317,7 @@ static void autocorrelation(int16_t amp[GSM0610_FRAME_LEN], int32_t L_ACF[9])
     /*endif*/
 
     /* Scaling of the array s[0...159] */
-#if defined(__GNUC__)  &&  defined(__i386__)
+#if defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX)
     if (scalauto > 0)
         gsm0610_vec_vsraw(amp, GSM0610_FRAME_LEN, scalauto);
     /*endif*/
@@ -264,78 +332,78 @@ static void autocorrelation(int16_t amp[GSM0610_FRAME_LEN], int32_t L_ACF[9])
 #endif
 
     /* Compute the L_ACF[..]. */
-#if defined(__GNUC__)  &&  defined(__i386__)
+#if defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX)
     for (k = 0;  k < 9;  k++)
         L_ACF[k] = vec_dot_prodi16(amp, amp + k, GSM0610_FRAME_LEN - k) << 1;
     /*endfor*/
 #else
     sp = amp;
     sl = *sp;
-    L_ACF[0] = ((int32_t) sl*sp[0]);
+    L_ACF[0] = ((int32_t) sl*(int32_t) sp[0]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] = ((int32_t) sl*sp[-1]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] = ((int32_t) sl*(int32_t) sp[-1]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] = ((int32_t) sl*sp[-2]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] = ((int32_t) sl*(int32_t) sp[-2]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] += ((int32_t) sl*sp[-2]);
-    L_ACF[3] = ((int32_t) sl*sp[-3]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+    L_ACF[3] = ((int32_t) sl*(int32_t) sp[-3]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] += ((int32_t) sl*sp[-2]);
-    L_ACF[3] += ((int32_t) sl*sp[-3]);
-    L_ACF[4] = ((int32_t) sl*sp[-4]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+    L_ACF[3] += ((int32_t) sl*(int32_t) sp[-3]);
+    L_ACF[4] = ((int32_t) sl*(int32_t) sp[-4]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] += ((int32_t) sl*sp[-2]);
-    L_ACF[3] += ((int32_t) sl*sp[-3]);
-    L_ACF[4] += ((int32_t) sl*sp[-4]);
-    L_ACF[5] = ((int32_t) sl*sp[-5]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+    L_ACF[3] += ((int32_t) sl*(int32_t) sp[-3]);
+    L_ACF[4] += ((int32_t) sl*(int32_t) sp[-4]);
+    L_ACF[5] = ((int32_t) sl*(int32_t) sp[-5]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] += ((int32_t) sl*sp[-2]);
-    L_ACF[3] += ((int32_t) sl*sp[-3]);
-    L_ACF[4] += ((int32_t) sl*sp[-4]);
-    L_ACF[5] += ((int32_t) sl*sp[-5]);
-    L_ACF[6] = ((int32_t) sl*sp[-6]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+    L_ACF[3] += ((int32_t) sl*(int32_t) sp[-3]);
+    L_ACF[4] += ((int32_t) sl*(int32_t) sp[-4]);
+    L_ACF[5] += ((int32_t) sl*(int32_t) sp[-5]);
+    L_ACF[6] = ((int32_t) sl*(int32_t) sp[-6]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] += ((int32_t) sl*sp[-2]);
-    L_ACF[3] += ((int32_t) sl*sp[-3]);
-    L_ACF[4] += ((int32_t) sl*sp[-4]);
-    L_ACF[5] += ((int32_t) sl*sp[-5]);
-    L_ACF[6] += ((int32_t) sl*sp[-6]);
-    L_ACF[7] = ((int32_t) sl*sp[-7]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+    L_ACF[3] += ((int32_t) sl*(int32_t) sp[-3]);
+    L_ACF[4] += ((int32_t) sl*(int32_t) sp[-4]);
+    L_ACF[5] += ((int32_t) sl*(int32_t) sp[-5]);
+    L_ACF[6] += ((int32_t) sl*(int32_t) sp[-6]);
+    L_ACF[7] = ((int32_t) sl*(int32_t) sp[-7]);
     sl = *++sp;
-    L_ACF[0] += ((int32_t) sl*sp[0]);
-    L_ACF[1] += ((int32_t) sl*sp[-1]);
-    L_ACF[2] += ((int32_t) sl*sp[-2]);
-    L_ACF[3] += ((int32_t) sl*sp[-3]);
-    L_ACF[4] += ((int32_t) sl*sp[-4]);
-    L_ACF[5] += ((int32_t) sl*sp[-5]);
-    L_ACF[6] += ((int32_t) sl*sp[-6]);
-    L_ACF[7] += ((int32_t) sl*sp[-7]);
-    L_ACF[8] = ((int32_t) sl*sp[-8]);
+    L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+    L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+    L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+    L_ACF[3] += ((int32_t) sl*(int32_t) sp[-3]);
+    L_ACF[4] += ((int32_t) sl*(int32_t) sp[-4]);
+    L_ACF[5] += ((int32_t) sl*(int32_t) sp[-5]);
+    L_ACF[6] += ((int32_t) sl*(int32_t) sp[-6]);
+    L_ACF[7] += ((int32_t) sl*(int32_t) sp[-7]);
+    L_ACF[8] = ((int32_t) sl*(int32_t) sp[-8]);
     for (i = 9;  i < GSM0610_FRAME_LEN;  i++)
     {
         sl = *++sp;
-        L_ACF[0] += ((int32_t) sl*sp[0]);
-        L_ACF[1] += ((int32_t) sl*sp[-1]);
-        L_ACF[2] += ((int32_t) sl*sp[-2]);
-        L_ACF[3] += ((int32_t) sl*sp[-3]);
-        L_ACF[4] += ((int32_t) sl*sp[-4]);
-        L_ACF[5] += ((int32_t) sl*sp[-5]);
-        L_ACF[6] += ((int32_t) sl*sp[-6]);
-        L_ACF[7] += ((int32_t) sl*sp[-7]);
-        L_ACF[8] += ((int32_t) sl*sp[-8]);
+        L_ACF[0] += ((int32_t) sl*(int32_t) sp[0]);
+        L_ACF[1] += ((int32_t) sl*(int32_t) sp[-1]);
+        L_ACF[2] += ((int32_t) sl*(int32_t) sp[-2]);
+        L_ACF[3] += ((int32_t) sl*(int32_t) sp[-3]);
+        L_ACF[4] += ((int32_t) sl*(int32_t) sp[-4]);
+        L_ACF[5] += ((int32_t) sl*(int32_t) sp[-5]);
+        L_ACF[6] += ((int32_t) sl*(int32_t) sp[-6]);
+        L_ACF[7] += ((int32_t) sl*(int32_t) sp[-7]);
+        L_ACF[8] += ((int32_t) sl*(int32_t) sp[-8]);
     }
     /*endfor*/
     for (k = 0;  k < 9;  k++)
@@ -396,7 +464,7 @@ static void reflection_coefficients(int32_t L_ACF[9], int16_t r[8])
     for (n = 1;  n <= 8;  n++, r++)
     {
         temp = P[1];
-        temp = gsm_abs (temp);
+        temp = saturated_abs16(temp);
         if (P[0] < temp)
         {
             for (i = n;  i <= 8;  i++)
@@ -419,15 +487,15 @@ static void reflection_coefficients(int32_t L_ACF[9], int16_t r[8])
 
         /* Schur recursion */
         temp = gsm_mult_r(P[1], *r);
-        P[0] = gsm_add(P[0], temp);
+        P[0] = saturated_add16(P[0], temp);
 
         for (m = 1;  m <= 8 - n;  m++)
         {
             temp = gsm_mult_r(K[m], *r);
-            P[m] = gsm_add(P[m + 1], temp);
+            P[m] = saturated_add16(P[m + 1], temp);
 
             temp = gsm_mult_r(P[m + 1], *r);
-            K[m] = gsm_add(K[m], temp);
+            K[m] = saturated_add16(K[m], temp);
         }
         /*endfor*/
     }
@@ -451,8 +519,7 @@ static void transform_to_log_area_ratios(int16_t r[8])
     /* Computation of the LAR[0..7] from the r[0..7] */
     for (i = 1;  i <= 8;  i++, r++)
     {
-        temp = *r;
-        temp = gsm_abs(temp);
+        temp = saturated_abs16(*r);
         assert(temp >= 0);
 
         if (temp < 22118)
@@ -494,9 +561,9 @@ static void quantization_and_coding(int16_t LAR[8])
 
 #undef STEP
 #define STEP(A,B,MAC,MIC)                                       \
-        temp = gsm_mult(A, *LAR);                               \
-        temp = gsm_add(temp, B);                                \
-        temp = gsm_add(temp, 256);                              \
+        temp = saturated_mul16(A, *LAR);                        \
+        temp = saturated_add16(temp, B);                        \
+        temp = saturated_add16(temp, 256);                      \
         temp >>= 9;                                             \
         *LAR  = (int16_t) ((temp > MAC)                         \
                          ?                                      \

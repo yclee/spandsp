@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: bit_operations_tests.c,v 1.10 2007/11/10 11:14:57 steveu Exp $
+ * $Id: bit_operations_tests.c,v 1.14 2008/05/13 13:17:25 steveu Exp $
  */
 
 /*! \page bit_operations_tests_page Bit operations tests
@@ -33,7 +33,7 @@ their operation with very dumb brute force versions of the same functionality.
 \section bit_operations_tests_page_sec_2 How is it used?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 

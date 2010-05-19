@@ -9,31 +9,31 @@
  *
  * Copyright (C) 2001, 2004 Steve Underwood
  *
- * The actual OKI ADPCM encode and decode method is derived from freely
- * available code, whose exact origins seem uncertain.
- *
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: oki_adpcm.c,v 1.22 2006/11/28 16:59:56 steveu Exp $
+ * The actual OKI ADPCM encode and decode method is derived from freely
+ * available code, whose exact origins seem uncertain.
+ *
+ * $Id: oki_adpcm.c,v 1.32 2009/02/10 13:06:46 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -42,19 +42,21 @@
 
 #include "spandsp/telephony.h"
 #include "spandsp/oki_adpcm.h"
+#include "spandsp/private/oki_adpcm.h"
 
 /* Routines to convert 12 bit linear samples to the Oki ADPCM coding format,
    widely used in CTI, because Dialogic use it. */
 
+/* OKI ADPCM step variation table */
 static const int16_t step_size[49] =
 {
-      16,   17,   19,   21,   23,   25,   28,   31,
-      34,   37,   41,   45,   50,   55,   60,   66,
-      73,   80,   88,   97,  107,  118,  130,  143,
-     157,  173,  190,  209,  230,  253,  279,  307,
-     337,  371,  408,  449,  494,  544,  598,  658,
-     724,  796,  876,  963, 1060, 1166, 1282, 1408,
-    1552
+       16,    17,    19,    21,    23,    25,    28,    31,
+       34,    37,    41,    45,    50,    55,    60,    66,
+       73,    80,    88,    97,   107,   118,   130,   143,
+      157,   173,   190,   209,   230,   253,   279,   307,
+      337,   371,   408,   449,   494,   544,   598,   658,
+      724,   796,   876,   963,  1060,  1166,  1282,  1411,
+     1552
 };
 
 static const int16_t step_adjustment[8] =
@@ -240,7 +242,7 @@ static uint8_t encode(oki_adpcm_state_t *s, int16_t linear)
 }
 /*- End of function --------------------------------------------------------*/
 
-oki_adpcm_state_t *oki_adpcm_init(oki_adpcm_state_t *s, int bit_rate)
+SPAN_DECLARE(oki_adpcm_state_t *) oki_adpcm_init(oki_adpcm_state_t *s, int bit_rate)
 {
     if (bit_rate != 32000  &&  bit_rate != 24000)
         return NULL;
@@ -256,17 +258,23 @@ oki_adpcm_state_t *oki_adpcm_init(oki_adpcm_state_t *s, int bit_rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-int oki_adpcm_release(oki_adpcm_state_t *s)
+SPAN_DECLARE(int) oki_adpcm_release(oki_adpcm_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) oki_adpcm_free(oki_adpcm_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int oki_adpcm_decode(oki_adpcm_state_t *s,
-                     int16_t amp[],
-                     const uint8_t oki_data[],
-                     int oki_bytes)
+SPAN_DECLARE(int) oki_adpcm_decode(oki_adpcm_state_t *s,
+                                   int16_t amp[],
+                                   const uint8_t oki_data[],
+                                   int oki_bytes)
 {
     int i;
     int x;
@@ -275,6 +283,9 @@ int oki_adpcm_decode(oki_adpcm_state_t *s,
     int samples;
     float z;
 
+#if (_MSC_VER >= 1400) 
+    __analysis_assume(s->phase >= 0  &&  s->phase <= 4);
+#endif
     samples = 0;
     if (s->bit_rate == 32000)
     {
@@ -313,10 +324,10 @@ int oki_adpcm_decode(oki_adpcm_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int oki_adpcm_encode(oki_adpcm_state_t *s,
-                     uint8_t oki_data[],
-                     const int16_t amp[],
-                     int len)
+SPAN_DECLARE(int) oki_adpcm_encode(oki_adpcm_state_t *s,
+                                   uint8_t oki_data[],
+                                   const int16_t amp[],
+                                   int len)
 {
     int x;
     int l;

@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: hdlc.h,v 1.36 2007/08/25 05:10:42 steveu Exp $
+ * $Id: hdlc.h,v 1.45 2009/06/02 16:03:56 steveu Exp $
  */
 
 /*! \file */
@@ -53,54 +53,7 @@ typedef void (*hdlc_underflow_handler_t)(void *user_data);
 /*!
     HDLC receive descriptor. This contains all the state information for an HDLC receiver.
  */
-typedef struct
-{
-    /*! 2 for CRC-16, 4 for CRC-32 */
-    int crc_bytes;
-    /*! \brief Maximum permitted frame length. */
-    size_t max_frame_len;
-    /*! \brief The callback routine called to process each good received frame. */
-    hdlc_frame_handler_t frame_handler;
-    /*! \brief An opaque parameter passed to the callback routine. */
-    void *user_data;
-    /*! \brief TRUE if bad frames are to be reported. */
-    int report_bad_frames;
-    /*! \brief The number of consecutive flags which must be seen before framing is
-        declared OK. */
-    int framing_ok_threshold;
-    /*! \brief TRUE if framing OK has been announced. */
-    int framing_ok_announced;
-    /*! \brief Number of consecutive flags seen so far. */
-    int flags_seen;
-
-    /*! \brief The raw (stuffed) bit stream buffer. */
-    unsigned int raw_bit_stream;
-    /*! \brief The destuffed bit stream buffer. */
-    unsigned int byte_in_progress;
-    /*! \brief The current number of bits in byte_in_progress. */
-    int num_bits;
-    int octet_counting_mode;
-    /*! \brief Octet count, to achieve the functionality needed for things
-               like MTP. */
-    int octet_count;
-    int octet_count_report_interval;
-
-    /*! \brief Buffer for a frame in progress. */
-    uint8_t buffer[HDLC_MAXFRAME_LEN + 4];
-    /*! \brief Length of a frame in progress. */
-    size_t len;
-
-    /*! \brief The number of bytes of good frames received (CRC not included). */
-    unsigned long int rx_bytes;
-    /*! \brief The number of good frames received. */
-    unsigned long int rx_frames;
-    /*! \brief The number of frames with CRC errors received. */
-    unsigned long int rx_crc_errors;
-    /*! \brief The number of too short and too long frames received. */
-    unsigned long int rx_length_errors;
-    /*! \brief The number of HDLC aborts received. */
-    unsigned long int rx_aborts;
-} hdlc_rx_state_t;
+typedef struct hdlc_rx_state_s hdlc_rx_state_t;
 
 /*!
     HDLC received data statistics.
@@ -123,51 +76,7 @@ typedef struct
     HDLC transmit descriptor. This contains all the state information for an
     HDLC transmitter.
  */
-typedef struct
-{
-    /*! 2 for CRC-16, 4 for CRC-32 */
-    int crc_bytes;
-    /*! \brief The callback routine called to indicate transmit underflow. */
-    hdlc_underflow_handler_t underflow_handler;
-    /*! \brief An opaque parameter passed to the callback routine. */
-    void *user_data;
-    /*! \brief The minimum flag octets to insert between frames. */
-    int inter_frame_flags;
-    /*! \brief TRUE if frame creation works in progressive mode. */
-    int progressive;
-    /*! \brief Maximum permitted frame length. */
-    size_t max_frame_len;
-
-    /*! \brief The stuffed bit stream being created. */
-    uint32_t octets_in_progress;
-    /*! \brief The number of bits currently in octets_in_progress. */
-    int num_bits;
-    /*! \brief The currently rotated state of the flag octet. */
-    int idle_octet;
-    /*! \brief The number of flag octets to send for a timed burst of flags. */
-    int flag_octets;
-    /*! \brief The number of abort octets to send for a timed burst of aborts. */
-    int abort_octets;
-    /*! \brief TRUE if the next underflow of timed flag octets should be reported */
-    int report_flag_underflow;
-
-    /*! \brief The current message being transmitted, with its CRC attached. */
-    uint8_t buffer[HDLC_MAXFRAME_LEN + 4];
-    /*! \brief The length of the message in the buffer. */
-    size_t len;
-    /*! \brief The current send position within the buffer. */
-    int pos;
-    /*! \brief The running CRC, as data fills the frame buffer. */
-    uint32_t crc;
-
-    /*! \brief The current byte being broken into bits for transmission. */
-    int byte;
-    /*! \brief The number of bits remaining in byte. */
-    int bits;
-    
-    /*! \brief TRUE if transmission should end on buffer underflow .*/
-    int tx_end;
-} hdlc_tx_state_t;
+typedef struct hdlc_tx_state_s hdlc_tx_state_t;
 
 #if defined(__cplusplus)
 extern "C"
@@ -185,51 +94,80 @@ extern "C"
     \param user_data An opaque parameter for the callback routine.
     \return A pointer to the HDLC receiver context.
 */
-hdlc_rx_state_t *hdlc_rx_init(hdlc_rx_state_t *s,
-                              int crc32,
-                              int report_bad_frames,
-                              int framing_ok_threshold,
-                              hdlc_frame_handler_t handler,
-                              void *user_data);
+SPAN_DECLARE(hdlc_rx_state_t *) hdlc_rx_init(hdlc_rx_state_t *s,
+                                             int crc32,
+                                             int report_bad_frames,
+                                             int framing_ok_threshold,
+                                             hdlc_frame_handler_t handler,
+                                             void *user_data);
+
+/*! Change the put_bit function associated with an HDLC receiver context.
+    \brief Change the put_bit function associated with an HDLC receiver context.
+    \param s A pointer to an HDLC receiver context.
+    \param handler The function to be called when a good HDLC frame is received.
+    \param user_data An opaque parameter for the callback routine.
+*/
+SPAN_DECLARE(void) hdlc_rx_set_frame_handler(hdlc_rx_state_t *s, hdlc_frame_handler_t handler, void *user_data);
+
+/*! Change the status report function associated with an HDLC receiver context.
+    \brief Change the status report function associated with an HDLC receiver context.
+    \param s A pointer to an HDLC receiver context.
+    \param handler The callback routine used to report status changes.
+    \param user_data An opaque parameter for the callback routine.
+*/
+SPAN_DECLARE(void) hdlc_rx_set_status_handler(hdlc_rx_state_t *s, modem_rx_status_func_t handler, void *user_data);
+
+/*! Release an HDLC receiver context.
+    \brief Release an HDLC receiver context.
+    \param s A pointer to an HDLC receiver context.
+    \return 0 for OK */
+SPAN_DECLARE(int) hdlc_rx_release(hdlc_rx_state_t *s);
+
+/*! Free an HDLC receiver context.
+    \brief Free an HDLC receiver context.
+    \param s A pointer to an HDLC receiver context.
+    \return 0 for OK */
+SPAN_DECLARE(int) hdlc_rx_free(hdlc_rx_state_t *s);
 
 /*! \brief Set the maximum frame length for an HDLC receiver context.
     \param s A pointer to an HDLC receiver context.
     \param max_len The maximum permitted length of a frame.
 */
-void hdlc_rx_set_max_frame_len(hdlc_rx_state_t *s, size_t max_len);
+SPAN_DECLARE(void) hdlc_rx_set_max_frame_len(hdlc_rx_state_t *s, size_t max_len);
 
 /*! \brief Set the octet counting report interval.
     \param s A pointer to an HDLC receiver context.
     \param interval The interval, in octets.
 */
-void hdlc_rx_set_octet_counting_report_interval(hdlc_rx_state_t *s, int interval);
+SPAN_DECLARE(void) hdlc_rx_set_octet_counting_report_interval(hdlc_rx_state_t *s,
+                                                              int interval);
 
 /*! \brief Get the current receive statistics.
     \param s A pointer to an HDLC receiver context.
     \param t A pointer to the buffer for the statistics.
     \return 0 for OK, else -1.
 */
-int hdlc_rx_get_stats(hdlc_rx_state_t *s,
-                      hdlc_rx_stats_t *t);
+SPAN_DECLARE(int) hdlc_rx_get_stats(hdlc_rx_state_t *s,
+                                    hdlc_rx_stats_t *t);
 
 /*! \brief Put a single bit of data to an HDLC receiver.
     \param s A pointer to an HDLC receiver context.
     \param new_bit The bit.
 */
-void hdlc_rx_put_bit(hdlc_rx_state_t *s, int new_bit);
+SPAN_DECLARE_NONSTD(void) hdlc_rx_put_bit(hdlc_rx_state_t *s, int new_bit);
 
 /*! \brief Put a byte of data to an HDLC receiver.
     \param s A pointer to an HDLC receiver context.
     \param new_byte The byte of data.
 */
-void hdlc_rx_put_byte(hdlc_rx_state_t *s, int new_byte);
+SPAN_DECLARE_NONSTD(void) hdlc_rx_put_byte(hdlc_rx_state_t *s, int new_byte);
 
 /*! \brief Put a series of bytes of data to an HDLC receiver.
     \param s A pointer to an HDLC receiver context.
     \param buf The buffer of data.
     \param len The length of the data in the buffer.
 */
-void hdlc_rx_put(hdlc_rx_state_t *s, const uint8_t buf[], int len);
+SPAN_DECLARE_NONSTD(void) hdlc_rx_put(hdlc_rx_state_t *s, const uint8_t buf[], int len);
 
 /*! \brief Initialise an HDLC transmitter context.
     \param s A pointer to an HDLC transmitter context.
@@ -240,18 +178,22 @@ void hdlc_rx_put(hdlc_rx_state_t *s, const uint8_t buf[], int len);
     \param user_data An opaque parameter for the callback routine.
     \return A pointer to the HDLC transmitter context.
 */
-hdlc_tx_state_t *hdlc_tx_init(hdlc_tx_state_t *s,
-                              int crc32,
-                              int inter_frame_flags,
-                              int progressive,
-                              hdlc_underflow_handler_t handler,
-                              void *user_data);
+SPAN_DECLARE(hdlc_tx_state_t *) hdlc_tx_init(hdlc_tx_state_t *s,
+                                             int crc32,
+                                             int inter_frame_flags,
+                                             int progressive,
+                                             hdlc_underflow_handler_t handler,
+                                             void *user_data);
+
+SPAN_DECLARE(int) hdlc_tx_release(hdlc_tx_state_t *s);
+
+SPAN_DECLARE(int) hdlc_tx_free(hdlc_tx_state_t *s);
 
 /*! \brief Set the maximum frame length for an HDLC transmitter context.
     \param s A pointer to an HDLC transmitter context.
     \param max_len The maximum length.
 */
-void hdlc_tx_set_max_frame_len(hdlc_tx_state_t *s, size_t max_len);
+SPAN_DECLARE(void) hdlc_tx_set_max_frame_len(hdlc_tx_state_t *s, size_t max_len);
 
 /*! \brief Transmit a frame.
     \param s A pointer to an HDLC transmitter context.
@@ -259,13 +201,13 @@ void hdlc_tx_set_max_frame_len(hdlc_tx_state_t *s, size_t max_len);
     \param len The length of the frame to be transmitted.
     \return 0 if the frame was accepted for transmission, else -1.
 */
-int hdlc_tx_frame(hdlc_tx_state_t *s, const uint8_t *frame, size_t len);
+SPAN_DECLARE(int) hdlc_tx_frame(hdlc_tx_state_t *s, const uint8_t *frame, size_t len);
 
 /*! \brief Corrupt the frame currently being transmitted, by giving it the wrong CRC.
     \param s A pointer to an HDLC transmitter context.
     \return 0 if the frame was corrupted, else -1.
 */
-int hdlc_tx_corrupt_frame(hdlc_tx_state_t *s);
+SPAN_DECLARE(int) hdlc_tx_corrupt_frame(hdlc_tx_state_t *s);
 
 /*! \brief Transmit a specified quantity of flag octets, typically as a preamble.
     \param s A pointer to an HDLC transmitter context.
@@ -274,33 +216,33 @@ int hdlc_tx_corrupt_frame(hdlc_tx_state_t *s);
            drained.
     \return 0 if the flags were accepted for transmission, else -1.
 */
-int hdlc_tx_flags(hdlc_tx_state_t *s, int len);
+SPAN_DECLARE(int) hdlc_tx_flags(hdlc_tx_state_t *s, int len);
 
 /*! \brief Send an abort.
     \param s A pointer to an HDLC transmitter context.
     \return 0 if the frame was aborted, else -1.
 */
-int hdlc_tx_abort(hdlc_tx_state_t *s);
+SPAN_DECLARE(int) hdlc_tx_abort(hdlc_tx_state_t *s);
 
 /*! \brief Get the next bit for transmission.
     \param s A pointer to an HDLC transmitter context.
     \return The next bit for transmission.
 */
-int hdlc_tx_get_bit(hdlc_tx_state_t *s);
+SPAN_DECLARE_NONSTD(int) hdlc_tx_get_bit(hdlc_tx_state_t *s);
 
 /*! \brief Get the next byte for transmission.
     \param s A pointer to an HDLC transmitter context.
     \return The next byte for transmission.
 */
-int hdlc_tx_get_byte(hdlc_tx_state_t *s);
+SPAN_DECLARE_NONSTD(int) hdlc_tx_get_byte(hdlc_tx_state_t *s);
 
 /*! \brief Get the next sequence of bytes for transmission.
     \param s A pointer to an HDLC transmitter context.
     \param buf The buffer for the data.
-    \param len The number of bytes to get.
+    \param max_len The number of bytes to get.
     \return The number of bytes actually got.
 */
-int hdlc_tx_get(hdlc_tx_state_t *s, uint8_t buf[], size_t max_len);
+SPAN_DECLARE_NONSTD(int) hdlc_tx_get(hdlc_tx_state_t *s, uint8_t buf[], size_t max_len);
 
 #if defined(__cplusplus)
 }

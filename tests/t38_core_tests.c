@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: t38_core_tests.c,v 1.9 2007/11/10 11:14:59 steveu Exp $
+ * $Id: t38_core_tests.c,v 1.16 2009/07/14 13:54:22 steveu Exp $
  */
 
 /*! \file */
@@ -32,7 +32,7 @@
 These tests exercise the T.38 core ASN.1 processing code.
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include <config.h>
 #endif
 
@@ -42,16 +42,10 @@ These tests exercise the T.38 core ASN.1 processing code.
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#if !defined(__USE_MISC)
-#define __USE_MISC
-#endif
-#include <arpa/inet.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <audiofile.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 
@@ -144,7 +138,7 @@ static int encode_decode_tests(t38_core_state_t *a, t38_core_state_t *b)
     for (i = 0;  i < 100;  i++)
     {
         current_indicator = i;
-        if (t38_core_send_indicator(a, i, 3) < 0)
+        if (t38_core_send_indicator(a, i) < 0)
             break;
     }
 
@@ -156,7 +150,7 @@ static int encode_decode_tests(t38_core_state_t *a, t38_core_state_t *b)
             current_data_type = i;
             current_field_type = j;
             skip = 99;
-            if (t38_core_send_data(a, i, j, (uint8_t *) "", 0, 1) < 0)
+            if (t38_core_send_data(a, i, j, (uint8_t *) "", 0, T38_PACKET_CATEGORY_CONTROL_DATA) < 0)
                 break;
         }
         if (j == 0)
@@ -171,7 +165,7 @@ static int encode_decode_tests(t38_core_state_t *a, t38_core_state_t *b)
             current_data_type = i;
             current_field_type = j;
             skip = 99;
-            if (t38_core_send_data(a, i, j, (uint8_t *) "ABCD", 4, 1) < 0)
+            if (t38_core_send_data(a, i, j, (uint8_t *) "ABCD", 4, T38_PACKET_CATEGORY_CONTROL_DATA) < 0)
                 break;
         }
         if (j == 0)
@@ -196,7 +190,7 @@ static int encode_decode_tests(t38_core_state_t *a, t38_core_state_t *b)
             field[1].field_type = T38_FIELD_T4_NON_ECM_SIG_END;
             field[1].field = field_body[1];
             field[1].field_len = field_len[1];
-            if (t38_core_send_data_multi_field(a, i, field, 2, 1) < 0)
+            if (t38_core_send_data_multi_field(a, i, field, 2, T38_PACKET_CATEGORY_CONTROL_DATA) < 0)
                 break;
         }
         if (j == 0)

@@ -22,10 +22,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: g1050_tests.c,v 1.10 2007/11/10 11:14:58 steveu Exp $
+ * $Id: g1050_tests.c,v 1.18 2009/05/30 15:23:13 steveu Exp $
  */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -39,10 +39,14 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
-#include <audiofile.h>
+#include <sndfile.h>
 #if defined(HAVE_MATH_H)
 #define GEN_CONST
 #endif
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 #include "spandsp-sim.h"
@@ -83,47 +87,52 @@ int main(int argc, char *argv[])
     int oos_packets_got;
     int missing_packets_got;
     int highest_seq_no_got;
+    int opt;
     FILE *out_file;
 
     model_no = MODEL_NO;
     speed_pattern_no = SPEED_PATTERN_NO;
     simulation_time = SIMULATION_TIME;
     use_gui = FALSE;
-    for (i = 1;  i < argc;  i++)
+    while ((opt = getopt(argc, argv, "gm:s:t:")) != -1)
     {
-        if (strcmp(argv[i], "-g") == 0)
+        switch (opt)
         {
+        case 'g':
+#if defined(ENABLE_GUI)
             use_gui = TRUE;
-            continue;
-        }
-        if (strcmp(argv[i], "-m") == 0)
-        {
-            model_no = argv[++i][0] - 'A' + 1;
+#else
+            fprintf(stderr, "Graphical monitoring not available\n");
+            exit(2);
+#endif
+            break;
+        case 'm':
+            model_no = optarg[0] - 'A' + 1;
             if (model_no < 0  ||  model_no > 8)
             {
-                printf("Bad model ID '%c'\n", argv[i][0]);
+                fprintf(stderr, "Bad model ID '%s'\n", optarg);
                 exit(2);
             }
-            continue;
-        }
-        if (strcmp(argv[i], "-s") == 0)
-        {
-            speed_pattern_no = atoi(argv[++i]);
+            break;
+        case 's':
+            speed_pattern_no = atoi(optarg);
             if (speed_pattern_no < 1  ||  speed_pattern_no > 133)
             {
-                printf("Bad link speed pattern %d\n", speed_pattern_no);
+                fprintf(stderr, "Bad link speed pattern %s\n", optarg);
                 exit(2);
             }
-            continue;
+            break;
+        case 't':
+            simulation_time = atoi(optarg);
+            break;
+        default:
+            //usage();
+            exit(2);
+            break;
         }
-        if (strcmp(argv[i], "-t") == 0)
-        {
-            simulation_time = atoi(argv[++i]);
-            continue;
-        }
-        fprintf(stderr, "Invalid parameter\n");
-        exit(2);
     }
+    argc -= optind;
+    argv += optind;
 
     if ((out_file = fopen("g1050_tests.txt", "w")) == NULL)
     {
@@ -169,9 +178,9 @@ int main(int argc, char *argv[])
     oos_packets_got = 0;
     missing_packets_got = 0;
     highest_seq_no_got = -1;
-    for (i = 0;  i < 10000;  i++)
+    for (i = 0;  i < num_packets;  i++)
     {
-        if ((len = g1050_put(s, put_pkt, put_pkt_len, i, (double) i*0.02)) > 0)
+        if ((len = g1050_put(s, put_pkt, put_pkt_len, i, (double) i*0.001*PACKET_INTERVAL)) > 0)
             packets_really_put++;
         packets_put++;
         if (i == 5)
@@ -180,7 +189,7 @@ int main(int argc, char *argv[])
         {
             do
             {
-                get_pkt_len = g1050_get(s, get_pkt, 256, (double) i*0.02, &get_seq_no, &get_departure_time, &get_arrival_time);
+                get_pkt_len = g1050_get(s, get_pkt, 256, (double) i*0.001*PACKET_INTERVAL, &get_seq_no, &get_departure_time, &get_arrival_time);
                 if (get_pkt_len >= 0)
                 {
 #if defined(ENABLE_GUI)
@@ -194,7 +203,7 @@ int main(int argc, char *argv[])
                         missing_packets_got += (get_seq_no - highest_seq_no_got - 1);
                     if (get_seq_no > highest_seq_no_got)
                         highest_seq_no_got = get_seq_no;
-                    fprintf(out_file, "%d, %.3f, %.8f\n", get_seq_no, get_seq_no*0.02, get_arrival_time);
+                    fprintf(out_file, "%d, %.3f, %.8f\n", get_seq_no, get_seq_no*0.001*PACKET_INTERVAL, get_arrival_time);
                 }
             }
             while (get_pkt_len >= 0);
@@ -207,11 +216,11 @@ int main(int argc, char *argv[])
     /* Clear out anything remaining in the queue, by jumping forwards in time */
     do
     {
-        get_pkt_len = g1050_get(s, get_pkt, 256, (double) i*0.02 + 5.0, &get_seq_no, &get_departure_time, &get_arrival_time);
+        get_pkt_len = g1050_get(s, get_pkt, 256, (double) i*0.001*PACKET_INTERVAL + 5.0, &get_seq_no, &get_departure_time, &get_arrival_time);
         if (get_pkt_len >= 0)
         {
             packets_got++;
-            fprintf(out_file, "%d, %.3f, %.8f\n", get_seq_no, get_seq_no*0.02, get_arrival_time);
+            fprintf(out_file, "%d, %.3f, %.8f\n", get_seq_no, get_seq_no*0.001*PACKET_INTERVAL, get_arrival_time);
         }
     }
     while (get_pkt_len >= 0);

@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: gsm0610.h,v 1.12 2007/08/21 14:25:54 steveu Exp $
+ * $Id: gsm0610.h,v 1.21 2009/02/10 13:06:47 steveu Exp $
  */
 
 #if !defined(_SPANDSP_GSM0610_H_)
@@ -72,34 +72,7 @@ typedef struct
     GSM 06.10 FR codec state descriptor. This defines the state of
     a single working instance of the GSM 06.10 FR encoder or decoder.
 */
-typedef struct
-{
-    /*! \brief One of the packing modes */
-    int packing;
-
-    int16_t dp0[280];
-
-    /*! Preprocessing */
-    int16_t z1;
-    int32_t L_z2;
-    /*! Pre-emphasis */
-    int16_t mp;
-
-    /*! Short term delay filter */
-    int16_t u[8];
-    int16_t LARpp[2][8];
-    int16_t j;
-
-    /*! Long term synthesis */
-    int16_t nrp;
-    /*! Short term synthesis */
-    int16_t v[9];
-    /*! Decoder postprocessing */
-    int16_t msr;
-    
-    /*! Encoder data */
-    int16_t e[50];
-} gsm0610_state_t;
+typedef struct gsm0610_state_s gsm0610_state_t;
 
 #if defined(__cplusplus)
 extern "C"
@@ -110,62 +83,67 @@ extern "C"
     \param s The GSM 06.10 context
     \param packing One of the GSM0610_PACKING_xxx options.
     \return A pointer to the GSM 06.10 context, or NULL for error. */
-gsm0610_state_t *gsm0610_init(gsm0610_state_t *s, int packing);
+SPAN_DECLARE(gsm0610_state_t *) gsm0610_init(gsm0610_state_t *s, int packing);
 
 /*! Release a GSM 06.10 encode or decode context.
     \param s The GSM 06.10 context
     \return 0 for success, else -1. */
-int gsm0610_release(gsm0610_state_t *s);
+SPAN_DECLARE(int) gsm0610_release(gsm0610_state_t *s);
+
+/*! Free a GSM 06.10 encode or decode context.
+    \param s The GSM 06.10 context
+    \return 0 for success, else -1. */
+SPAN_DECLARE(int) gsm0610_free(gsm0610_state_t *s);
 
 /*! Set the packing format for a GSM 06.10 encode or decode context.
     \param s The GSM 06.10 context
     \param packing One of the GSM0610_PACKING_xxx options.
     \return 0 for success, else -1. */
-int gsm0610_set_packing(gsm0610_state_t *s, int packing);
+SPAN_DECLARE(int) gsm0610_set_packing(gsm0610_state_t *s, int packing);
 
 /*! Encode a buffer of linear PCM data to GSM 06.10.
     \param s The GSM 06.10 context.
-    \param ima_data The GSM 06.10 data produced.
+    \param code The GSM 06.10 data produced.
     \param amp The audio sample buffer.
     \param len The number of samples in the buffer.
     \return The number of bytes of GSM 06.10 data produced. */
-int gsm0610_encode(gsm0610_state_t *s, uint8_t code[], const int16_t amp[], int quant);
+SPAN_DECLARE(int) gsm0610_encode(gsm0610_state_t *s, uint8_t code[], const int16_t amp[], int len);
 
 /*! Decode a buffer of GSM 06.10 data to linear PCM.
     \param s The GSM 06.10 context.
     \param amp The audio sample buffer.
     \param code The GSM 06.10 data.
-    \param quant The number of frames of GSM 06.10 data to be decoded.
+    \param len The number of bytes of GSM 06.10 data to be decoded.
     \return The number of samples returned. */
-int gsm0610_decode(gsm0610_state_t *s, int16_t amp[], const uint8_t code[], int quant);
+SPAN_DECLARE(int) gsm0610_decode(gsm0610_state_t *s, int16_t amp[], const uint8_t code[], int len);
 
-int gsm0610_pack_none(uint8_t c[], const gsm0610_frame_t *s);
+SPAN_DECLARE(int) gsm0610_pack_none(uint8_t c[], const gsm0610_frame_t *s);
 
 /*! Pack a pair of GSM 06.10 frames in the format used for wave files (wave type 49).
     \param c The buffer for the packed data. This must be at least 65 bytes long.
     \param s A pointer to the frames to be packed.
     \return The number of bytes generated. */
-int gsm0610_pack_wav49(uint8_t c[], const gsm0610_frame_t *s);
+SPAN_DECLARE(int) gsm0610_pack_wav49(uint8_t c[], const gsm0610_frame_t *s);
 
 /*! Pack a GSM 06.10 frames in the format used for VoIP.
     \param c The buffer for the packed data. This must be at least 33 bytes long.
     \param s A pointer to the frame to be packed.
     \return The number of bytes generated. */
-int gsm0610_pack_voip(uint8_t c[], const gsm0610_frame_t *s);
+SPAN_DECLARE(int) gsm0610_pack_voip(uint8_t c[], const gsm0610_frame_t *s);
 
-int gsm0610_unpack_none(gsm0610_frame_t *s, const uint8_t c[]);
+SPAN_DECLARE(int) gsm0610_unpack_none(gsm0610_frame_t *s, const uint8_t c[]);
 
 /*! Unpack a pair of GSM 06.10 frames from the format used for wave files (wave type 49).
     \param s A pointer to a buffer into which the frames will be packed.
     \param c The buffer containing the data to be unpacked. This must be at least 65 bytes long.
     \return The number of bytes absorbed. */
-int gsm0610_unpack_wav49(gsm0610_frame_t *s, const uint8_t c[]);
+SPAN_DECLARE(int) gsm0610_unpack_wav49(gsm0610_frame_t *s, const uint8_t c[]);
 
 /*! Unpack a GSM 06.10 frame from the format used for VoIP.
     \param s A pointer to a buffer into which the frame will be packed.
     \param c The buffer containing the data to be unpacked. This must be at least 33 bytes long.
     \return The number of bytes absorbed. */
-int gsm0610_unpack_voip(gsm0610_frame_t *s, const uint8_t c[]);
+SPAN_DECLARE(int) gsm0610_unpack_voip(gsm0610_frame_t *s, const uint8_t c[]);
 
 #if defined(__cplusplus)
 }

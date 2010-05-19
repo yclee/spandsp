@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: super_tone_rx.h,v 1.13 2007/09/01 09:16:57 steveu Exp $
+ * $Id: super_tone_rx.h,v 1.21 2009/02/10 13:06:47 steveu Exp $
  */
 
 #if !defined(_SPANDSP_SUPER_TONE_RX_H_)
@@ -57,59 +57,34 @@ executive override tone, confirmation tone).
 /*! Tone detection indication callback routine */
 typedef void (*tone_report_func_t)(void *user_data, int code, int level, int delay);
 
-#define BINS            128
+typedef struct super_tone_rx_segment_s super_tone_rx_segment_t;
 
-typedef struct
-{
-    int f1;
-    int f2;
-    int recognition_duration;
-    int min_duration;
-    int max_duration;
-} super_tone_rx_segment_t;
+typedef struct super_tone_rx_descriptor_s super_tone_rx_descriptor_t;
 
-typedef struct
-{
-    int used_frequencies;
-    int monitored_frequencies;
-    int pitches[BINS/2][2];
-    int tones;
-    super_tone_rx_segment_t **tone_list;
-    int *tone_segs;
-    goertzel_descriptor_t *desc;
-} super_tone_rx_descriptor_t;
+typedef struct super_tone_rx_state_s super_tone_rx_state_t;
 
-typedef struct
+#if defined(__cplusplus)
+extern "C"
 {
-    super_tone_rx_descriptor_t *desc;
-    float energy;
-    float total_energy;
-    int detected_tone;
-    int rotation;
-    tone_report_func_t tone_callback;
-    void (*segment_callback)(void *data, int f1, int f2, int duration);
-    void *callback_data;
-    super_tone_rx_segment_t segments[11];
-    goertzel_state_t state[];
-} super_tone_rx_state_t;
+#endif
 
 /*! Create a new supervisory tone detector descriptor.
     \param desc The supervisory tone set desciptor. If NULL, the routine will allocate space for a
                 descriptor.
     \return The supervisory tone set descriptor.
 */
-super_tone_rx_descriptor_t *super_tone_rx_make_descriptor(super_tone_rx_descriptor_t *desc);
+SPAN_DECLARE(super_tone_rx_descriptor_t *) super_tone_rx_make_descriptor(super_tone_rx_descriptor_t *desc);
 
 /*! Free a supervisory tone detector descriptor.
     \param desc The supervisory tone set desciptor.
     \return 0 for OK, -1 for fail.
 */
-int super_tone_rx_free_descriptor(super_tone_rx_descriptor_t *desc);
+SPAN_DECLARE(int) super_tone_rx_free_descriptor(super_tone_rx_descriptor_t *desc);
 
 /*! Add a new tone pattern to a supervisory tone detector set.
     \param desc The supervisory tone set descriptor.
     \return The new tone ID. */
-int super_tone_rx_add_tone(super_tone_rx_descriptor_t *desc);
+SPAN_DECLARE(int) super_tone_rx_add_tone(super_tone_rx_descriptor_t *desc);
 
 /*! Add a new tone pattern element to a tone pattern in a supervisory tone detector.
     \param desc The supervisory tone set desciptor.
@@ -120,12 +95,12 @@ int super_tone_rx_add_tone(super_tone_rx_descriptor_t *desc);
     \param max The maximum duration, in ms.
     \return The new number of elements in the tone description.
 */
-int super_tone_rx_add_element(super_tone_rx_descriptor_t *desc,
-                              int tone,
-                              int f1,
-                              int f2,
-                              int min,
-                              int max);
+SPAN_DECLARE(int) super_tone_rx_add_element(super_tone_rx_descriptor_t *desc,
+                                            int tone,
+                                            int f1,
+                                            int f2,
+                                            int min,
+                                            int max);
 
 /*! Initialise a supervisory tone detector.
     \param s The supervisory tone detector context.
@@ -135,24 +110,30 @@ int super_tone_rx_add_element(super_tone_rx_descriptor_t *desc,
     \param user_data An opaque pointer passed when calling the callback routine.
     \return The supervisory tone detector context.
 */
-super_tone_rx_state_t *super_tone_rx_init(super_tone_rx_state_t *s,
-                                          super_tone_rx_descriptor_t *desc,
-                                          tone_report_func_t callback,
-                                          void *user_data);
+SPAN_DECLARE(super_tone_rx_state_t *) super_tone_rx_init(super_tone_rx_state_t *s,
+                                                         super_tone_rx_descriptor_t *desc,
+                                                         tone_report_func_t callback,
+                                                         void *user_data);
 
 /*! Release a supervisory tone detector.
     \param s The supervisory tone context.
     \return 0 for OK, -1 for fail.
 */
-int super_tone_rx_free(super_tone_rx_state_t *s);
+SPAN_DECLARE(int) super_tone_rx_release(super_tone_rx_state_t *s);
+
+/*! Free a supervisory tone detector.
+    \param s The supervisory tone context.
+    \return 0 for OK, -1 for fail.
+*/
+SPAN_DECLARE(int) super_tone_rx_free(super_tone_rx_state_t *s);
 
 /*! Define a callback routine to be called each time a tone pattern element is complete. This is
     mostly used when analysing a tone.
     \param s The supervisory tone context.
     \param callback The callback routine.
 */
-void super_tone_rx_segment_callback(super_tone_rx_state_t *s,
-                                    void (*callback)(void *data, int f1, int f2, int duration));
+SPAN_DECLARE(void) super_tone_rx_segment_callback(super_tone_rx_state_t *s,
+                                                  void (*callback)(void *data, int f1, int f2, int duration));
 
 /*! Apply supervisory tone detection processing to a block of audio samples.
     \brief Apply supervisory tone detection processing to a block of audio samples.
@@ -161,7 +142,11 @@ void super_tone_rx_segment_callback(super_tone_rx_state_t *s,
     \param samples The number of samples in the buffer.
     \return The number of samples processed.
 */
-int super_tone_rx(super_tone_rx_state_t *super, const int16_t amp[], int samples);
+SPAN_DECLARE(int) super_tone_rx(super_tone_rx_state_t *super, const int16_t amp[], int samples);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif
 /*- End of file ------------------------------------------------------------*/

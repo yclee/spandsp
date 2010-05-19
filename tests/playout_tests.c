@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: playout_tests.c,v 1.18 2007/11/26 13:29:00 steveu Exp $
+ * $Id: playout_tests.c,v 1.29 2009/05/30 15:23:14 steveu Exp $
  */
 
 /*! \page playout_tests_page Playout (jitter buffering) tests
@@ -31,16 +31,18 @@ These tests simulate timing jitter and packet loss in an audio stream, and see
 how well the playout module copes.
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <audiofile.h>
+#include <sndfile.h>
 
 #include "spandsp.h"
+#include "spandsp/private/time_scale.h"
+#include "spandsp-sim.h"
 
 #define INPUT_FILE_NAME     "playout_in.wav"
 #define OUTPUT_FILE_NAME    "playout_out.wav"
@@ -69,31 +71,17 @@ static void dynamic_buffer_tests(void)
     int len;
     int inframes;
     int outframes;
-    AFfilehandle inhandle;
-    AFfilehandle outhandle;
-    AFfilesetup filesetup;
+    SNDFILE *inhandle;
+    SNDFILE *outhandle;
 
-    filesetup = afNewFileSetup();
-    if (filesetup == AF_NULL_FILESETUP)
+    if ((inhandle = sf_open_telephony_read(INPUT_FILE_NAME, 1)) == NULL)
     {
-        fprintf(stderr, "    Failed to create file setup\n");
+        fprintf(stderr, "    Failed to open audio file '%s'\n", INPUT_FILE_NAME);
         exit(2);
     }
-    afInitSampleFormat(filesetup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-    afInitRate(filesetup, AF_DEFAULT_TRACK, (float) SAMPLE_RATE);
-    afInitFileFormat(filesetup, AF_FILE_WAVE);
-    afInitChannels(filesetup, AF_DEFAULT_TRACK, 2);
-
-    inhandle = afOpenFile(INPUT_FILE_NAME, "r", NULL);
-    if (inhandle == AF_NULL_FILEHANDLE)
+    if ((outhandle = sf_open_telephony_write(OUTPUT_FILE_NAME, 1)) == NULL)
     {
-        fprintf(stderr, "    Failed to open wave file '%s'\n", INPUT_FILE_NAME);
-        exit(2);
-    }
-    outhandle = afOpenFile(OUTPUT_FILE_NAME, "w", filesetup);
-    if (outhandle == AF_NULL_FILEHANDLE)
-    {
-        fprintf(stderr, "    Failed to create wave file '%s'\n", OUTPUT_FILE_NAME);
+        fprintf(stderr, "    Failed to create audio file '%s'\n", OUTPUT_FILE_NAME);
         exit(2);
     }
 
@@ -104,19 +92,16 @@ static void dynamic_buffer_tests(void)
     for (i = 0;  i < BLOCK_LEN;  i++)
         fill[i] = 32767;
 
-    if ((s = playout_new(2*BLOCK_LEN, 15*BLOCK_LEN)) == NULL)
+    if ((s = playout_init(2*BLOCK_LEN, 15*BLOCK_LEN)) == NULL)
         return;
     plc_init(&plc);
-    time_scale_init(&ts, 1.0);
+    time_scale_init(&ts, SAMPLE_RATE, 1.0);
     for (i = 0;  i < 1000000;  i++)
     {
         if (i >= next_actual_receive)
         {
             amp = malloc(BLOCK_LEN*sizeof(int16_t));
-            inframes = afReadFrames(inhandle,
-                                    AF_DEFAULT_TRACK,
-                                    amp,
-                                    BLOCK_LEN);
+            inframes = sf_readf_short(inhandle, amp, BLOCK_LEN);
             if (inframes < BLOCK_LEN)
                 break;
             ret = playout_put(s,
@@ -172,7 +157,7 @@ printf("len = %d\n", len);
                     buf[2*j] = out[j];
                     buf[2*j + 1] = 10*playout_current_length(s);
                 }
-                outframes = afWriteFrames(outhandle, AF_DEFAULT_TRACK, buf, len);
+                outframes = sf_writef_short(outhandle, buf, len);
                 if (outframes != len)
                 {
                     fprintf(stderr, "    Error writing out sound\n");
@@ -193,7 +178,7 @@ printf("len = %d\n", len);
                     buf[2*j] = out[j];
                     buf[2*j + 1] = 10*playout_current_length(s);
                 }
-                outframes = afWriteFrames(outhandle, AF_DEFAULT_TRACK, buf, len);
+                outframes = sf_writef_short(outhandle, buf, len);
                 if (outframes != len)
                 {
                     fprintf(stderr, "    Error writing out sound\n");
@@ -222,17 +207,16 @@ printf("len = %d\n", len);
             }
         }
     }
-    if (afCloseFile(inhandle) != 0)
+    if (sf_close(inhandle) != 0)
     {
-        fprintf(stderr, "    Cannot close wave file '%s'\n", INPUT_FILE_NAME);
+        fprintf(stderr, "    Cannot close audio file '%s'\n", INPUT_FILE_NAME);
         exit(2);
     }
-    if (afCloseFile(outhandle) != 0)
+    if (sf_close(outhandle) != 0)
     {
-        fprintf(stderr, "    Cannot close wave file '%s'\n", OUTPUT_FILE_NAME);
+        fprintf(stderr, "    Cannot close audio file '%s'\n", OUTPUT_FILE_NAME);
         exit(2);
     }
-    afFreeFileSetup(filesetup);
 
     printf("%10" PRId32 " %10" PRId32 " %10d\n", s->state_just_in_time, s->state_late, playout_current_length(s));
 
@@ -268,7 +252,7 @@ static void static_buffer_tests(void)
     type = PLAYOUT_TYPE_SPEECH;
     len = BLOCK_LEN;
 
-    if ((s = playout_new(2*BLOCK_LEN, 2*BLOCK_LEN)) == NULL)
+    if ((s = playout_init(2*BLOCK_LEN, 2*BLOCK_LEN)) == NULL)
         return;
     for (i = 0;  i < 1000000;  i++)
     {

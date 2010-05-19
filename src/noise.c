@@ -11,25 +11,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: noise.c,v 1.19 2007/11/26 13:28:59 steveu Exp $
+ * $Id: noise.c,v 1.31 2009/02/10 13:06:46 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -42,12 +42,16 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/fast_convert.h"
+#include "spandsp/saturated.h"
 #include "spandsp/noise.h"
 
-int16_t noise(noise_state_t *s)
+#include "spandsp/private/noise.h"
+
+SPAN_DECLARE(int16_t) noise(noise_state_t *s)
 {
     int32_t val;
     int i;
@@ -76,13 +80,7 @@ int16_t noise(noise_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-noise_state_t *noise_init_dbm0(noise_state_t *s, int seed, float level, int class_of_noise, int quality)
-{
-    return noise_init_dbov(s, seed, (level - DBM0_MAX_POWER), class_of_noise, quality);
-}
-/*- End of function --------------------------------------------------------*/
-
-noise_state_t *noise_init_dbov(noise_state_t *s, int seed, float level, int class_of_noise, int quality)
+SPAN_DECLARE(noise_state_t *) noise_init_dbov(noise_state_t *s, int seed, float level, int class_of_noise, int quality)
 {
     float rms;
 
@@ -105,9 +103,28 @@ noise_state_t *noise_init_dbov(noise_state_t *s, int seed, float level, int clas
         /* Allow for the gain of the filter */
         rms *= 1.043f;
     }
-    s->rms = (int32_t) (rms*sqrtf(12.0f/quality));
+    s->rms = (int32_t) (rms*sqrtf(12.0f/s->quality));
     s->class_of_noise = class_of_noise;
     return s;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(noise_state_t *) noise_init_dbm0(noise_state_t *s, int seed, float level, int class_of_noise, int quality)
+{
+    return noise_init_dbov(s, seed, (level - DBM0_MAX_POWER), class_of_noise, quality);
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) noise_release(noise_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) noise_free(noise_state_t *s)
+{
+    free(s);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

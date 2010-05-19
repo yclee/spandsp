@@ -1,7 +1,7 @@
 /*
  * SpanDSP - a series of DSP components for telephony
  *
- * vector_int_tests.c
+ * complex_vector_int_tests.c
  *
  * Written by Steve Underwood <steveu@coppice.org>
  *
@@ -22,10 +22,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: vector_int_tests.c,v 1.4 2007/11/10 11:14:59 steveu Exp $
+ * $Id: vector_int_tests.c,v 1.11 2009/04/26 07:00:39 steveu Exp $
  */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -33,7 +33,6 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
-#include <audiofile.h>
 
 #include "spandsp.h"
 
@@ -44,8 +43,36 @@ static int32_t vec_dot_prodi16_dumb(const int16_t x[], const int16_t y[], int n)
 
     z = 0;
     for (i = 0;  i < n;  i++)
-        z += x[i]*y[i];
-    return  z;
+        z += (int32_t) x[i]*(int32_t) y[i];
+    return z;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int test_vec_dot_prodi16(void)
+{
+    int i;
+    int32_t za;
+    int32_t zb;
+    int16_t x[99];
+    int16_t y[99];
+
+    for (i = 0;  i < 99;  i++)
+    {
+        x[i] = rand();
+        y[i] = rand();
+    }
+
+    for (i = 1;  i < 99;  i++)
+    {
+        za = vec_dot_prodi16(x, y, i);
+        zb = vec_dot_prodi16_dumb(x, y, i);
+        if (za != zb)
+        {
+            printf("Tests failed\n");
+            exit(2);
+        }
+    }
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -79,7 +106,7 @@ static int32_t vec_min_maxi16_dumb(const int16_t x[], int n, int16_t out[])
 }
 /*- End of function --------------------------------------------------------*/
     
-int main(int argc, char *argv[])
+static int test_vec_min_maxi16(void)
 {
     int i;
     int32_t za;
@@ -95,14 +122,6 @@ int main(int argc, char *argv[])
         y[i] = rand();
     }
 
-    za = vec_dot_prodi16(x, y, 99);
-    zb = vec_dot_prodi16_dumb(x, y, 99);
-    if (za != zb)
-    {
-        printf("Tests failed\n");
-        exit(2);
-    }
-
     x[42] = -32768;
     za = vec_min_maxi16_dumb(x, 99, outa);
     zb = vec_min_maxi16(x, 99, outb);
@@ -115,6 +134,56 @@ int main(int argc, char *argv[])
         printf("Tests failed\n");
         exit(2);
     }
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int test_vec_circular_dot_prodi16(void)
+{
+    int i;
+    int j;
+    int pos;
+    int len;
+    int32_t za;
+    int32_t zb;
+    int16_t x[99];
+    int16_t y[99];
+
+    /* Verify that we can do circular sample buffer "dot" linear coefficient buffer
+       operations properly, by doing two sub-dot products. */
+    for (i = 0;  i < 99;  i++)
+    {
+        x[i] = rand();
+        y[i] = rand();
+    }
+
+    len = 95;
+    for (pos = 0;  pos < len;  pos++)
+    {
+        za = vec_circular_dot_prodi16(x, y, len, pos);
+        zb = 0;
+        for (i = 0;  i < len;  i++)
+        {
+            j = (pos + i) % len;
+            zb += (int32_t) x[j]*(int32_t) y[i];
+        }
+
+        if (za != zb)
+        {
+            printf("Tests failed\n");
+            exit(2);
+        }
+    }
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+int main(int argc, char *argv[])
+{
+    test_vec_dot_prodi16();
+    test_vec_min_maxi16();
+    test_vec_circular_dot_prodi16();
+
     printf("Tests passed.\n");
     return 0;
 }

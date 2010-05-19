@@ -1,24 +1,27 @@
 #!/bin/sh
 #
-# spandsp regression tests
+# SpanDSP - a series of DSP components for telephony
+#
+# regression_tests.sh
 #
 # This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License version 2, as
-# published by the Free Software Foundation.
+# it under the terms of the GNU Lesser General Public License version 2.1,
+# as published by the Free Software Foundation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
+# You should have received a copy of the GNU Lesser General Public
+# License along with this program; if not, write to the Free Software
 # Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-# $Id: regression_tests.sh,v 1.46 2007/09/28 13:00:10 steveu Exp $
+# $Id: regression_tests.sh,v 1.59 2009/09/22 13:28:18 steveu Exp $
 #
 
-ITUTESTS_TIF=../itutests/fax/itutests.tif
+ITUTESTS_TIF=../test-data/itu/fax/itutests.tif
+MIXEDSIZES_TIF=../test-data/itu/fax/mixed_size_pages.tif
 STDOUT_DEST=xyzzy
 STDERR_DEST=xyzzy2
 
@@ -97,6 +100,33 @@ then
 fi
 echo bit_operations_tests completed OK
 
+./complex_tests >$STDOUT_DEST 2>$STDERR_DEST
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo complex_tests failed!
+    exit $RETVAL
+fi
+echo complex_tests completed OK
+
+./complex_vector_float_tests >$STDOUT_DEST 2>$STDERR_DEST
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo complex_vector_float_tests failed!
+    exit $RETVAL
+fi
+echo complex_vector_float_tests completed OK
+
+./complex_vector_int_tests >$STDOUT_DEST 2>$STDERR_DEST
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo complex_vector_int_tests failed!
+    exit $RETVAL
+fi
+echo complex_vector_int_tests completed OK
+
 ./crc_tests >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
@@ -152,6 +182,7 @@ echo dtmf_tx_tests completed OK
 #echo echo_tests completed OK
 echo echo_tests not enabled
 
+#Try the ITU test pages without ECM
 rm -f fax_tests_1.tif
 ./fax_tests >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
@@ -169,6 +200,7 @@ then
     echo fax_tests failed!
     exit $RETVAL
 fi
+#Try the ITU test pages with ECM
 rm -f fax_tests_1.tif
 ./fax_tests -e >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
@@ -186,6 +218,24 @@ then
     echo fax_tests -e failed!
     exit $RETVAL
 fi
+#Try some mixed sized test pages without ECM
+rm -f fax_tests_1.tif
+./fax_tests -i ${MIXEDSIZES_TIF} >$STDOUT_DEST 2>$STDERR_DEST
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo fax_tests failed!
+    exit $RETVAL
+fi
+# Now use tiffcmp to check the results. It will return non-zero if any page images differ. The -t
+# option means the normal differences in tags will be ignored.
+tiffcmp -t ${MIXEDSIZES_TIF} fax_tests_1.tif >/dev/null
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo fax_tests failed!
+    exit $RETVAL
+fi
 echo fax_tests completed OK
 
 ./fsk_tests >$STDOUT_DEST 2>$STDERR_DEST
@@ -196,6 +246,15 @@ then
     exit $RETVAL
 fi
 echo fsk_tests completed OK
+
+#./g1050_tests >$STDOUT_DEST 2>$STDERR_DEST
+#RETVAL=$?
+#if [ $RETVAL != 0 ]
+#then
+#    echo g1050_tests failed!
+#    exit $RETVAL
+#fi
+#echo g1050_tests completed OK
 
 ./g711_tests >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
@@ -361,6 +420,15 @@ then
 fi
 echo r2_mf_tx_tests completed OK
 
+#./rfc2198_sim_tests >$STDOUT_DEST 2>$STDERR_DEST
+#RETVAL=$?
+#if [ $RETVAL != 0 ]
+#then
+#    echo rfc2198_sim_tests failed!
+#    exit $RETVAL
+#fi
+#echo rfc2198_sim_tests completed OK
+
 ./schedule_tests >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
@@ -399,6 +467,16 @@ echo super_tone_rx_tests not enabled
 #fi
 #echo super_tone_tx_tests completed OK
 echo super_tone_tx_tests not enabled
+
+#./swept_tone_tests >$STDOUT_DEST 2>$STDERR_DEST
+#RETVAL=$?
+#if [ $RETVAL != 0 ]
+#then
+#    echo swept_tone_tests failed!
+#    exit $RETVAL
+#fi
+#echo swept_tone_tests completed OK
+echo swept_tone_tests not enabled
 
 ./t31_tests -r >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
@@ -497,6 +575,15 @@ then
 fi
 echo t38_gateway_to_terminal_tests completed OK
 
+./t38_non_ecm_buffer_tests >$STDOUT_DEST 2>$STDERR_DEST
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo t38_non_ecm_buffer_tests failed!
+    exit $RETVAL
+fi
+echo t38_non_ecm_buffer_tests completed OK
+
 rm -f t38.tif
 ./t38_terminal_to_gateway_tests >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
@@ -589,14 +676,15 @@ echo t4_tests completed OK
 #echo time_scale_tests completed OK
 echo time_scale_tests not enabled
 
-./tone_detect_tests >$STDOUT_DEST 2>$STDERR_DEST
-RETVAL=$?
-if [ $RETVAL != 0 ]
-then
-    echo tone_detect_tests failed!
-    exit $RETVAL
-fi
-echo tone_detect_tests completed OK
+#./tone_detect_tests >$STDOUT_DEST 2>$STDERR_DEST
+#RETVAL=$?
+#if [ $RETVAL != 0 ]
+#then
+#    echo tone_detect_tests failed!
+#    exit $RETVAL
+#fi
+#echo tone_detect_tests completed OK
+echo tone_detect_tests not enabled
 
 #./tone_generate_tests >$STDOUT_DEST 2>$STDERR_DEST
 #RETVAL=$?
@@ -608,28 +696,28 @@ echo tone_detect_tests completed OK
 #echo tone_generate_tests completed OK
 echo tone_generate_tests not enabled
 
-./v17_tests -s -42 14400 >$STDOUT_DEST 2>$STDERR_DEST
+./v17_tests -b 14400 -s -42 -n -66 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
     echo v17_tests failed!
     exit $RETVAL
 fi
-./v17_tests -s -42 12000 >$STDOUT_DEST 2>$STDERR_DEST
+./v17_tests -b 12000 -s -42 -n -61 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
     echo v17_tests failed!
     exit $RETVAL
 fi
-./v17_tests -s -42 9600 >$STDOUT_DEST 2>$STDERR_DEST
+./v17_tests -b 9600 -s -42 -n -59 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
     echo v17_tests failed!
     exit $RETVAL
 fi
-./v17_tests -s -42 7200 >$STDOUT_DEST 2>$STDERR_DEST
+./v17_tests -b 7200 -s -42 -n -56 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
@@ -638,7 +726,14 @@ then
 fi
 echo v17_tests completed OK
 
-#./v22bis_tests >$STDOUT_DEST 2>$STDERR_DEST
+#./v22bis_tests -b 2400 >$STDOUT_DEST 2>$STDERR_DEST
+#RETVAL=$?
+#if [ $RETVAL != 0 ]
+#then
+#    echo v22bis_tests failed!
+#    exit $RETVAL
+#fi
+#./v22bis_tests -b 1200 >$STDOUT_DEST 2>$STDERR_DEST
 #RETVAL=$?
 #if [ $RETVAL != 0 ]
 #then
@@ -648,14 +743,14 @@ echo v17_tests completed OK
 #echo v22bis_tests completed OK
 echo v22bis_tests not enabled
 
-./v27ter_tests -s -42 2400 >$STDOUT_DEST 2>$STDERR_DEST
+./v27ter_tests -b 4800 -s -42 -n -57 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
     echo v27ter_tests failed!
     exit $RETVAL
 fi
-./v27ter_tests -s -42 4800 >$STDOUT_DEST 2>$STDERR_DEST
+./v27ter_tests -b 2400 -s -42 -n -51 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
@@ -664,21 +759,21 @@ then
 fi
 echo v27ter_tests completed OK
 
-./v29_tests -s -42 4800 >$STDOUT_DEST 2>$STDERR_DEST
+./v29_tests -b 9600 -s -42 -n -62 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
     echo v29_tests failed!
     exit $RETVAL
 fi
-./v29_tests -s -42 7200 >$STDOUT_DEST 2>$STDERR_DEST
+./v29_tests -b 7200 -s -42 -n -58 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
     echo v29_tests failed!
     exit $RETVAL
 fi
-./v29_tests -s -42 9600 >$STDOUT_DEST 2>$STDERR_DEST
+./v29_tests -b 4800 -s -42 -n -54 >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?
 if [ $RETVAL != 0 ]
 then
@@ -714,6 +809,15 @@ then
     exit $RETVAL
 fi
 echo v8_tests completed OK
+
+./v18_tests >$STDOUT_DEST 2>$STDERR_DEST
+RETVAL=$?
+if [ $RETVAL != 0 ]
+then
+    echo v18_tests failed!
+    exit $RETVAL
+fi
+echo v18_tests completed OK
 
 ./vector_float_tests >$STDOUT_DEST 2>$STDERR_DEST
 RETVAL=$?

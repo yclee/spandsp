@@ -1,13 +1,34 @@
 /* config-h.in.  Generated from configure.ac by autoheader.  */
 
-/* Define to 1 if you have the <audiofile.h> header file. */
-#undef HAVE_AUDIOFILE_H
+/* Define to 1 if you have the acosf() function. */
+#undef HAVE_ACOSF
+
+/* Define to 1 if you have the asinf() function. */
+#undef HAVE_ASINF
+
+/* Define to 1 if you have the atan2f() function. */
+#undef HAVE_ATAN2F
+
+/* Define to 1 if you have the atanf() function. */
+#undef HAVE_ATANF
+
+/* Define to 1 if you have the ceilf() function. */
+#undef HAVE_CEILF
+
+/* Define to 1 if you have the cosf() function. */
+#undef HAVE_COSF
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
 
 /* Define to 1 if you don't have `vprintf' but do have `_doprnt.' */
 #undef HAVE_DOPRNT
+
+/* Define to 1 if you have the `drand48' function. */
+#undef HAVE_DRAND48
+
+/* Define to 1 if you have the expf() function. */
+#undef HAVE_EXPF
 
 /* Define to 1 if you have the <fcntl.h> header file. */
 #undef HAVE_FCNTL_H
@@ -20,6 +41,9 @@
 
 /* Define to 1 if you have the <float.h> header file. */
 #undef HAVE_FLOAT_H
+
+/* Define to 1 if you have the floorf() function. */
+#undef HAVE_FLOORF
 
 /* Define to 1 if you have the <FL/Fl_Audio_Meter.H> header file. */
 #undef HAVE_FL_FL_AUDIO_METER_H
@@ -63,11 +87,29 @@
 /* Define to 1 if you have the <libxml/xmlmemory.h> header file. */
 #undef HAVE_LIBXML_XMLMEMORY_H
 
+/* Define if you have C99's llrint function. */
+#undef HAVE_LLRINT
+
+/* Define if you have C99's llrintf function. */
+#undef HAVE_LLRINTF
+
+/* Define to 1 if you have the log10f() function. */
+#undef HAVE_LOG10F
+
+/* Define to 1 if you have the logf() function. */
+#undef HAVE_LOGF
+
 /* Define to 1 if the system has the type `long double'. */
 #undef HAVE_LONG_DOUBLE
 
 /* Define to 1 if the system has the type `long long'. */
 #undef HAVE_LONG_LONG
+
+/* Define if you have C99's lrint function. */
+#undef HAVE_LRINT
+
+/* Define if you have C99's lrintf function. */
+#undef HAVE_LRINTF
 
 /* Define to 1 if your system has a GNU libc compatible `malloc' function, and
    to 0 otherwise. */
@@ -88,6 +130,9 @@
 /* Define to 1 if you have the `memset' function. */
 #undef HAVE_MEMSET
 
+/* Define to 1 if you have the powf() function. */
+#undef HAVE_POWF
+
 /* Define to 1 if you have the <pthread.h> header file. */
 #undef HAVE_PTHREAD_H
 
@@ -97,6 +142,12 @@
 
 /* Define to 1 if you have the `select' function. */
 #undef HAVE_SELECT
+
+/* Define to 1 if you have the sinf() function. */
+#undef HAVE_SINF
+
+/* Define to 1 if you have the <sndfile.h> header file. */
+#undef HAVE_SNDFILE_H
 
 /* Define to 1 if you have the <socket.h> header file. */
 #undef HAVE_SOCKET_H
@@ -155,14 +206,14 @@
 /* Define to 1 if you have <sys/wait.h> that is POSIX.1 compatible. */
 #undef HAVE_SYS_WAIT_H
 
+/* Define to 1 if you have the tanf() function. */
+#undef HAVE_TANF
+
 /* Define to 1 if you have the <tgmath.h> header file. */
 #undef HAVE_TGMATH_H
 
 /* Define to 1 if you have the <tiffio.h> header file. */
 #undef HAVE_TIFFIO_H
-
-/* Define to 1 if you have the <unicall.h> header file. */
-#undef HAVE_UNICALL_H
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
@@ -203,8 +254,41 @@
 /* Define to the type of arg 5 for `select'. */
 #undef SELECT_TYPE_ARG5
 
+/* Do not expect a misaligned memory access to work correctly */
+#undef SPANDSP_MISALIGNED_ACCESS_FAILS
+
+/* Use the library symbol export capability of the compiler */
+#undef SPANDSP_USE_EXPORT_CAPABILITY
+
 /* Enable fixed point processing, where possible, instead of floating point */
 #undef SPANDSP_USE_FIXED_POINT
+
+/* Use the MMX instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_MMX
+
+/* Use the SSE instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE
+
+/* Use the SSE2 instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE2
+
+/* Use the SSE3 instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE3
+
+/* Use the SSE4A instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE4A
+
+/* Use the SSE4.1 instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE4_1
+
+/* Use the SSE4.2 instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE4_2
+
+/* Use the SSE5 instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSE5
+
+/* Use the SSSE3 instruction set (i386 and x86_64 only). */
+#undef SPANDSP_USE_SSSE3
 
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS

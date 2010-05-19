@@ -10,28 +10,28 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * This code is based on the widely used GSM 06.10 code available from
  * http://kbs.cs.tu-berlin.de/~jutta/toast.html
  *
- * $Id: gsm0610_rpe.c,v 1.14 2007/08/20 15:22:22 steveu Exp $
+ * $Id: gsm0610_rpe.c,v 1.25.4.2 2009/12/28 11:54:58 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <assert.h>
@@ -42,11 +42,15 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <stdlib.h>
 
+#include "mmx_sse_decs.h"
+
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/bitstream.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/saturated.h"
 #include "spandsp/gsm0610.h"
 
 #include "gsm0610_local.h"
@@ -54,28 +58,91 @@
 /* 4.2.13 .. 4.2.17  RPE ENCODING SECTION */
 
 /* 4.2.13 */
-static void weighting_filter(const int16_t *e,     // signal [-5..0.39.44] IN
-                             int16_t x[40])
+static void weighting_filter(int16_t x[40],
+                             const int16_t *e)      // signal [-5..0.39.44] IN)
 {
-#if defined(__GNUC__)  &&  defined(__i386__)
+#if defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX)  &&  defined(__x86_64__)
     /* Table 4.4   Coefficients of the weighting filter */
     /* This must be padded to a multiple of 4 for MMX to work */
-    static const int16_t gsm_H[12] =
+    static const union
     {
-        -134, -374, 0, 2054, 5741, 8192, 5741, 2054, 0, -374, -134, 0
+        int16_t gsm_H[12];
+        __m64 x[3];
+    } gsm_H =
+    {
+        {
+            -134, -374, 0, 2054, 5741, 8192, 5741, 2054, 0, -374, -134, 0
+        }
+
+    };
+
+    __asm__ __volatile__(
+        " emms;\n"
+        " addq $-10,%%rcx;\n"
+        " leaq %[gsm_H],%%rax;\n"
+        " movq (%%rax),%%mm1;\n"
+        " movq 8(%%rax),%%mm2;\n"
+        " movq 16(%%rax),%%mm3;\n"
+        " movq $0x1000,%%rax;\n"
+        " movq %%rax,%%mm5;\n"              /* For rounding */
+        " xorq %%rsi,%%rsi;\n"
+        " .p2align 2;\n"
+        "1:\n"
+        " movq (%%rcx,%%rsi,2),%%mm0;\n"
+        " pmaddwd %%mm1,%%mm0;\n"
+ 
+        " movq 8(%%rcx,%%rsi,2),%%mm4;\n"
+        " pmaddwd %%mm2,%%mm4;\n"
+        " paddd %%mm4,%%mm0;\n"
+
+        " movq 16(%%rcx,%%rsi,2),%%mm4;\n"
+        " pmaddwd %%mm3,%%mm4;\n"
+        " paddd %%mm4,%%mm0;\n"
+
+        " movq %%mm0,%%mm4;\n"
+        " punpckhdq %%mm0,%%mm4;\n"         /* mm4 has high int32 of mm0 dup'd */
+        " paddd %%mm4,%%mm0;\n"
+
+        " paddd %%mm5,%%mm0;\n"             /* Add for roundoff */
+        " psrad $13,%%mm0;\n"
+        " packssdw %%mm0,%%mm0;\n"        
+        " movd %%mm0,%%eax;\n"              /* eax has result */
+        " movw %%ax,(%%rdi,%%rsi,2);\n"
+        " incq %%rsi;\n"
+        " cmpq $39,%%rsi;\n"
+        " jle 1b;\n"
+        " emms;\n"
+        :
+        : "c" (e), "D" (x), [gsm_H] "X" (gsm_H)
+        : "rax", "rdx", "rsi", "memory"
+    );
+#elif defined(__GNUC__)  &&  defined(SPANDSP_USE_MMX)  &&  defined(__i386__)
+    /* Table 4.4   Coefficients of the weighting filter */
+    /* This must be padded to a multiple of 4 for MMX to work */
+    static const union
+    {
+        int16_t gsm_H[12];
+        __m64 x[3];
+    } gsm_H =
+    {
+        {
+            -134, -374, 0, 2054, 5741, 8192, 5741, 2054, 0, -374, -134, 0
+        }
+
     };
 
     __asm__ __volatile__(
         " emms;\n"
         " addl $-10,%%ecx;\n"
+        " leal %[gsm_H],%%eax;\n"
+        " movq (%%eax),%%mm1;\n"
+        " movq 8(%%eax),%%mm2;\n"
+        " movq 16(%%eax),%%mm3;\n"
         " movl $0x1000,%%eax;\n"
-        " movd %%eax,%%mm5;\n"              /* for rounding */
-        " movq %[gsm_H],%%mm1;\n"
-        " movq %[gsm_H8],%%mm2;\n"
-        " movq %[gsm_H16],%%mm3;\n"
+        " movd %%eax,%%mm5;\n"              /* For rounding */
         " xorl %%esi,%%esi;\n"
         " .p2align 2;\n"
-        "1:;\n"
+        "1:\n"
         " movq (%%ecx,%%esi,2),%%mm0;\n"
         " pmaddwd %%mm1,%%mm0;\n"
  
@@ -101,8 +168,8 @@ static void weighting_filter(const int16_t *e,     // signal [-5..0.39.44] IN
         " jle 1b;\n"
         " emms;\n"
         :
-        : "c" (e), "D" (x), [gsm_H] "X" (*((int64_t *) gsm_H)), [gsm_H8] "X" (*((int64_t *) (gsm_H + 4))), [gsm_H16] "X" (*((int64_t *) (gsm_H + 8)))
-        : "eax", "edx", "esi"
+        : "c" (e), "D" (x), [gsm_H] "X" (gsm_H)
+        : "eax", "edx", "esi", "memory"
     );
 #else
     int32_t L_result;
@@ -131,8 +198,8 @@ static void weighting_filter(const int16_t *e,     // signal [-5..0.39.44] IN
 
         /* for (i = 0; i <= 10; i++)
          * {
-         *      L_temp   = gsm_l_mult(wt[k + i], gsm_H[i]);
-         *      L_result = gsm_l_add(L_result, L_temp);
+         *      L_temp   = saturated_mul_16_32(wt[k + i], gsm_H[i]);
+         *      L_result = saturated_add32(L_result, L_temp);
          * }
          */
 
@@ -145,13 +212,13 @@ static void weighting_filter(const int16_t *e,     // signal [-5..0.39.44] IN
         */
         L_result += STEP( 0,  -134);
         L_result += STEP( 1,  -374);
-              // += STEP( 2,  0   );
+              /* += STEP( 2,  0   ); */
         L_result += STEP( 3,  2054);
         L_result += STEP( 4,  5741);
         L_result += STEP( 5,  8192);
         L_result += STEP( 6,  5741);
         L_result += STEP( 7,  2054);
-              // += STEP( 8,  0   );
+              /* += STEP( 8,  0   ); */
         L_result += STEP( 9,  -374);
         L_result += STEP(10,  -134);
 
@@ -343,7 +410,7 @@ static void apcm_quantization(int16_t xM[13],
     for (i = 0;  i < 13;  i++)
     {
         temp = xM[i];
-        temp = gsm_abs(temp);
+        temp = saturated_abs16(temp);
         if (temp > xmax)
             xmax = temp;
         /*endif*/
@@ -371,7 +438,7 @@ static void apcm_quantization(int16_t xM[13],
     temp = (int16_t) (exp + 5);
 
     assert(temp <= 11  &&  temp >= 0);
-    xmaxc = gsm_add((xmax >> temp), exp << 3);
+    xmaxc = saturated_add16((xmax >> temp), exp << 3);
 
     /* Quantizing and coding of the xM[0..12] RPE sequence
        to get the xMc[0..12] */
@@ -398,7 +465,7 @@ static void apcm_quantization(int16_t xM[13],
         assert(temp1 >= 0  &&  temp1 < 16);
 
         temp = xM[i] << temp1;
-        temp = gsm_mult(temp, temp2);
+        temp = saturated_mul16(temp, temp2);
         temp >>= 12;
         xMc[i] = (int16_t) (temp + 4);      /* See note below */
     }
@@ -432,11 +499,13 @@ static void apcm_inverse_quantization(int16_t xMc[13],
        samples to obtain the xMp[0..12] array.  Table 4.6 is used to get
        the mantissa of xmaxc (FAC[0..7]).
     */
+#if 0
     assert(mant >= 0  &&  mant <= 7);
+#endif
 
-    temp1 = gsm_FAC[mant];          /* See 4.2-15 for mant */
-    temp2 = gsm_sub(6, exp);        /* See 4.2-15 for exp */
-    temp3 = gsm_asl(1, gsm_sub (temp2, 1));
+    temp1 = gsm_FAC[mant];                  /* See 4.2-15 for mant */
+    temp2 = saturated_sub16(6, exp);        /* See 4.2-15 for exp */
+    temp3 = gsm_asl(1, saturated_sub16(temp2, 1));
 
     for (i = 0;  i < 13;  i++)
     {
@@ -447,7 +516,7 @@ static void apcm_inverse_quantization(int16_t xMc[13],
 
         temp <<= 12;                            /* 16 bit signed */
         temp = gsm_mult_r(temp1, temp);
-        temp = gsm_add(temp, temp3);
+        temp = saturated_add16(temp, temp3);
         xMp[i] = gsm_asr(temp, temp2);
     }
     /*endfor*/
@@ -503,7 +572,7 @@ void gsm0610_rpe_encoding(gsm0610_state_t *s,
     int16_t mant;
     int16_t exp;
 
-    weighting_filter(e, x);
+    weighting_filter(x, e);
     rpe_grid_selection(x, xM, Mc);
 
     apcm_quantization(xM, xMc, &mant, &exp, xmaxc);

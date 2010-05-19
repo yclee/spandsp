@@ -22,14 +22,14 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: logging_tests.c,v 1.10 2007/11/10 11:14:58 steveu Exp $
+ * $Id: logging_tests.c,v 1.16 2009/02/12 12:38:39 steveu Exp $
  */
 
 /*! \page logging_tests_page Logging tests
 \section logging_tests_page_sec_1 What does it do?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -41,6 +41,10 @@
 #include <unistd.h>
 #include <memory.h>
 #include <time.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 
@@ -128,7 +132,7 @@ int main(int argc, char *argv[])
     struct timespec delay;
 
     /* Set up a logger */
-    if (span_log_init(&log, 123, "TAG"))
+    if (span_log_init(&log, 123, "TAG") == NULL)
     {
         fprintf(stderr, "Failed to initialise log.\n");
         exit(2);

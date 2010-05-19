@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: plc.c,v 1.18 2007/11/30 12:20:33 steveu Exp $
+ * $Id: plc.c,v 1.27.4.1 2009/12/23 14:23:49 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdio.h>
@@ -41,16 +41,16 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <limits.h>
 
 #include "spandsp/telephony.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/fast_convert.h"
+#include "spandsp/saturated.h"
 #include "spandsp/plc.h"
 
 /* We do a straight line fade to zero volume in 50ms when we are filling in for missing data. */
 #define ATTENUATION_INCREMENT       0.0025f     /* Attenuation per sample */
-
-#define ms_to_samples(t)            (((t)*SAMPLE_RATE)/1000)
 
 static void save_history(plc_state_t *s, int16_t *buf, int len)
 {
@@ -114,7 +114,7 @@ static __inline__ int amdf_pitch(int min_pitch, int max_pitch, int16_t amp[], in
 }
 /*- End of function --------------------------------------------------------*/
 
-int plc_rx(plc_state_t *s, int16_t amp[], int len)
+SPAN_DECLARE(int) plc_rx(plc_state_t *s, int16_t amp[], int len)
 {
     int i;
     int pitch_overlap;
@@ -158,7 +158,7 @@ int plc_rx(plc_state_t *s, int16_t amp[], int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int plc_fillin(plc_state_t *s, int16_t amp[], int len)
+SPAN_DECLARE(int) plc_fillin(plc_state_t *s, int16_t amp[], int len)
 {
     int i;
     int pitch_overlap;
@@ -234,7 +234,7 @@ int plc_fillin(plc_state_t *s, int16_t amp[], int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-plc_state_t *plc_init(plc_state_t *s)
+SPAN_DECLARE(plc_state_t *) plc_init(plc_state_t *s)
 {
     if (s == NULL)
     {
@@ -246,7 +246,13 @@ plc_state_t *plc_init(plc_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int plc_free(plc_state_t *s)
+SPAN_DECLARE(int) plc_release(plc_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) plc_free(plc_state_t *s)
 {
     if (s)
         free(s);

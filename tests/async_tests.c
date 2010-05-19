@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: async_tests.c,v 1.13 2007/11/10 11:14:57 steveu Exp $
+ * $Id: async_tests.c,v 1.19 2009/05/30 15:23:13 steveu Exp $
  */
 
 /*! \file */
@@ -31,14 +31,18 @@
 \section async_tests_page_sec_1 What does it do?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <audiofile.h>
+#include <sndfile.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 

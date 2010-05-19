@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: echo_monitor.h,v 1.9 2007/04/03 12:59:33 steveu Exp $
+ * $Id: echo_monitor.h,v 1.12 2008/04/26 13:39:16 steveu Exp $
  */
 
 /*! \page echo_monitor_page Echo canceller performance monitoring

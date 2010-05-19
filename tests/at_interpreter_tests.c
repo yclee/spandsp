@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: at_interpreter_tests.c,v 1.11 2007/11/10 11:14:57 steveu Exp $
+ * $Id: at_interpreter_tests.c,v 1.24 2009/10/09 14:53:57 steveu Exp $
  */
 
 /*! \file */
@@ -32,7 +32,7 @@
 These tests exercise all the commands which should be understood by the AT interpreter.
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -42,8 +42,9 @@ These tests exercise all the commands which should be understood by the AT inter
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
-#include <audiofile.h>
+#include <sndfile.h>
 
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
 #include "spandsp.h"
 
 #define DLE 0x10
@@ -220,14 +221,22 @@ static const struct command_response_s general_test_seq[] =
     {"AT+EB=?\r", "\r\n+EB:\r\n\r\nOK\r\n"},                        /* V.250 6.5.2 - Break handling in error control operation */ 
     {"AT+EFCS=?\r", "\r\n+EFCS:(0-2)\r\n\r\nOK\r\n"},               /* V.250 6.5.4 - 32-bit frame check sequence */ 
     {"AT+EFCS?\r", "\r\n+EFCS:0\r\n\r\nOK\r\n"},
-    {"AT+EFRAM=?\r", "\r\n+EFRAM:(1-65535),(1-65535)\r\n\r\nOK\r\n"},     /* V.250 6.5.8 - Frame length */ 
+    {"AT+EFRAM=?\r", "\r\n+EFRAM:(1-65535),(1-65535)\r\n\r\nOK\r\n"},
+                                                                    /* V.250 6.5.8 - Frame length */ 
     {"AT+ER=?\r", "\r\n+ER:(0,1)\r\n\r\nOK\r\n"},                   /* V.250 6.5.5 - Error control reporting */ 
-    {"AT+ES\r", "\r\nOK\r\n"},                                      /* V.250 6.5.1 - Error control selection */ 
+    {"AT+ES=?\r", "\r\n+ES:(0-7),(0-4),(0-9)\r\n\r\nOK\r\n"},       /* V.250 6.5.1 - Error control selection */ 
+    {"AT+ES?\r", "\r\n+ES:0,0,0\r\n\r\nOK\r\n"},
+    {"AT+ESA=?\r", "\r\n+ESA:(0-2),(0-1),(0-1),(0-1),(0-2),(0-1),(0-255),(0-255)\r\n\r\nOK\r\n"},
+                                                                    /* V.80 8.2 - Synchronous access mode configuration */
+    {"AT+ESA?\r", "\r\n+ESA:0,0,0,0,0,0,0,0\r\n\r\nOK\r\n"},
     {"AT+ESR\r", "\r\nOK\r\n"},                                     /* V.250 6.5.3 - Selective repeat */ 
     {"AT+ETBM=?\r", "\r\n+ETBM:(0-2),(0-2),(0-30)\r\n\r\nOK\r\n"},  /* T.31 8.5.1 - Adaptive reception control */ 
     {"AT+ETBM?\r", "\r\n+ETBM:0,0\r\n\r\nOK\r\n"},
     {"AT+EWIND=?\r", "\r\n+EWIND:(1-127),(1-127)\r\n\r\nOK\r\n"},   /* V.250 6.5.7 - Window size */ 
     {"AT+EWIND?\r", "\r\n+EWIND:0,0\r\n\r\nOK\r\n"},
+    {"AT+F34=?\r",  "\r\n+F34:(0-14),(0-14),(0-2),(0-14),(0-14)\r\n\r\nOK\r\n"},
+                                                                    /* T.31 B.6.1 - Initial V.34 rate controls for FAX */
+    {"AT+F34?\r", "\r\n+F34:0,0,0,0,0\r\n\r\nOK\r\n"},
     {"AT+FAR=?\r", "\r\n0,1\r\n\r\nOK\r\n"},                        /* T.31 8.5.1 - Adaptive reception control */ 
     {"AT+FAR?\r", "\r\n0\r\n\r\nOK\r\n"},
     {"AT+FCL=?\r", "\r\n(0-255)\r\n\r\nOK\r\n"},                    /* T.31 8.5.2 - Carrier loss timeout */ 
@@ -263,6 +272,11 @@ static const struct command_response_s general_test_seq[] =
     {"AT+GMR?\r", "\r\n" VERSION "\r\n\r\nOK\r\n"},                 /* V.250 6.1.6 - Request revision identification */ 
     {"AT+GOI\r", "\r\nOK\r\n"},                                     /* V.250 6.1.8 - Request global object identification */ 
     {"AT+GSN?\r", "\r\n42\r\n\r\nOK\r\n"},                          /* V.250 6.1.7 - Request product serial number identification */ 
+    {"AT+IBC=?\r", "\r\n+IBC:(0-2),(0,1),(0,1),(0,1),(0,1),(0,1),(0,1),(0,1),(0,1),(0,1),(0,1),(0.1),(0,1)\r\n\r\nOK\r\n"},
+                                                                    /* V.80 7.9 - Control of in-band control */
+    {"AT+IBC?\r", "\r\n+IBC:0,0,0,0,0,0,0,0,0,0,0,0,0\r\n\r\nOK\r\n"},
+    {"AT+IBM=?\r", "\r\n+IBM:(0-7),(0-255),(0-255)\r\n\r\nOK\r\n"}, /* V.80 7.10 - In-band MARK idle reporting control */
+    {"AT+IBM?\r", "\r\n+IBM:0,0,0\r\n\r\nOK\r\n"},
     {"AT+ICF?\r", "\r\n+ICF:0,0\r\n\r\nOK\r\n"},                    /* V.250 6.2.11 - DTE-DCE character framing */ 
     {"AT+ICLOK?\r", "\r\n+ICLOK:0\r\n\r\nOK\r\n"},                  /* V.250 6.2.14 - Select sync transmit clock source */ 
     {"AT+IDSR?\r", "\r\n+IDSR:0\r\n\r\nOK\r\n"},                    /* V.250 6.2.16 - Select data set ready option */ 
@@ -339,7 +353,7 @@ static const struct command_response_s general_test_seq[] =
     {"AT+VRX\r", "\r\nOK\r\n"},                                     /* V.253 10.1.3 - Voice receive state */
     {"AT+VSD\r", "\r\nOK\r\n"},                                     /* V.253 10.2.7 - Silence detection (QUIET and SILENCE) */
     {"AT+VSID=12345\r", "\r\nOK\r\n"},                              /* Extension - Set the originating number */
-    {"AT+vsid?\r", "\r\n12345\r\n\r\nOK\r\n"},                      /* Extension - Set the originating number */
+    {"AT+VSID?\r", "\r\n12345\r\n\r\nOK\r\n"},
     {"AT+VSM\r", "\r\nOK\r\n"},                                     /* V.253 10.2.8 - Compression method selection */
     {"AT+VSP\r", "\r\nOK\r\n"},                                     /* V.253 10.5.1 - Voice speakerphone state */
     {"AT+VTA\r", "\r\nOK\r\n"},                                     /* V.253 10.5.4 - Train acoustic echo-canceller */ 
@@ -350,7 +364,7 @@ static const struct command_response_s general_test_seq[] =
     {"AT+VTX\r", "\r\nOK\r\n"},                                     /* V.253 10.1.6 - Transmit data state */
     {"AT+WS46\r", "\r\nOK\r\n"},                                    /* 3GPP TS 27.007 5.9 - PCCA STD-101 [17] select wireless network */
     {"ATA\r", "\r\nERROR\r\n"},                                     /* V.250 6.3.5 - Answer */ 
-    {"ATDT1234567890ABCDPSTW*#+,!@\r", ""},                         /* V.250 6.3.1 - Dial */ 
+    {"ATDT -1234567890ABCDPSTW*#+,!@\r;", ""},                      /* V.250 6.3.1 - Dial */ 
     {"ATE1\r", "\r\nOK\r\n"},                                       /* V.250 6.2.4 - Command echo */ 
     {"ATE0\r", "ATE0\r\r\nOK\r\n"},                                 /* V.250 6.2.4 - Command echo */ 
     {"ATH\r", "\r\nOK\r\n"},                                        /* V.250 6.3.6 - Hook control */ 
@@ -405,6 +419,7 @@ static int at_send(at_state_t *s, const char *t)
 }
 /*- End of function --------------------------------------------------------*/
 
+#if 0
 static int at_send_at(at_state_t *s, const char *t)
 {
     uint8_t buf[500];
@@ -440,6 +455,7 @@ static int at_send_hdlc(at_state_t *s, uint8_t *t, int len)
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
+#endif
 
 static int general_test(at_state_t *s)
 {

@@ -27,56 +27,6 @@
 extern "C" {
 #endif
 
-/* A kindofa rint() for VC++ (only kindofa, because rint should be type generic,
-   and this one is purely float to int */
-static inline long int lrintf(float a)
-{
-    long int i;
-    
-    __asm
-    {
-        fld   a
-        fistp i
-    }
-    return i;
-}
-
-static inline long int lrint(double a)
-{
-    long int i;
-    
-    __asm
-    {
-        fld   a
-        fistp i
-    }
-    return i;
-}
-
-static inline int rintf(float a)
-{
-    int i;
-    
-    __asm
-    {
-        fld   a
-        fistp i
-    }
-    return i;
-}
-
-static inline int rint(double a)
-{
-    int i;
-    
-    __asm
-    {
-        fld   a
-        fistp i
-    }
-    return i;
-}
-
 #ifdef __cplusplus
 }
 #endif

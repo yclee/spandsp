@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: spandsp-sim.h,v 1.1 2007/04/03 13:41:40 steveu Exp $
+ * $Id: spandsp-sim.h,v 1.5 2008/04/26 13:39:16 steveu Exp $
  */
 
 /*! \file */
@@ -36,6 +36,7 @@
 #include <tiffio.h>
 
 #include <spandsp/g1050.h>
+#include <spandsp/rfc2198_sim.h>
 #include <spandsp/test_utils.h>
 #include <spandsp/line_model.h>
 #include <spandsp/line_models.h>

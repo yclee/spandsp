@@ -11,25 +11,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: adsi.c,v 1.54 2007/11/26 13:28:58 steveu Exp $
+ * $Id: adsi.c,v 1.77 2009/11/02 13:25:20 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <inttypes.h>
@@ -42,9 +42,11 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <assert.h>
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/logging.h"
 #include "spandsp/queue.h"
 #include "spandsp/complex.h"
@@ -59,14 +61,27 @@
 #include "spandsp/dtmf.h"
 #include "spandsp/adsi.h"
 
+#include "spandsp/private/logging.h"
+#include "spandsp/private/queue.h"
+#include "spandsp/private/tone_generate.h"
+#include "spandsp/private/async.h"
+#include "spandsp/private/fsk.h"
+#include "spandsp/private/dtmf.h"
+#include "spandsp/private/adsi.h"
+
+/*! The baudot code to shift from alpha to digits and symbols */
 #define BAUDOT_FIGURE_SHIFT     0x1B
+/*! The baudot code to shift from digits and symbols to alpha */
 #define BAUDOT_LETTER_SHIFT     0x1F
 
-#define SOH 0x01
-#define STX 0x02
-#define ETX 0x03
-#define DLE 0x10
-#define SUB 0x1A
+enum
+{
+    SOH = 0x01,
+    STX = 0x02,
+    ETX = 0x03,
+    DLE = 0x10,
+    SUB = 0x1A
+};
 
 static uint16_t adsi_encode_baudot(adsi_tx_state_t *s, uint8_t ch);
 static uint8_t adsi_decode_baudot(adsi_rx_state_t *s, uint8_t ch);
@@ -133,7 +148,7 @@ static int adsi_tx_get_bit(void *user_data)
     }
     else
     {
-        bit = PUTBIT_END_OF_DATA;
+        bit = SIG_STATUS_END_OF_DATA;
         if (s->tx_signal_on)
         {
             /* The FSK should now be switched off. */
@@ -173,18 +188,16 @@ static void adsi_rx_put_bit(void *user_data, int bit)
     if (bit < 0)
     {
         /* Special conditions */
+        span_log(&s->logging, SPAN_LOG_FLOW, "ADSI signal status is %s (%d)\n", signal_status_to_str(bit), bit);
         switch (bit)
         {
-        case PUTBIT_CARRIER_UP:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Carrier up.\n");
+        case SIG_STATUS_CARRIER_UP:
             s->consecutive_ones = 0;
             s->bit_pos = 0;
             s->in_progress = 0;
             s->msg_len = 0;
-            s->baudot_shift = 0;
             break;
-        case PUTBIT_CARRIER_DOWN:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Carrier down.\n");
+        case SIG_STATUS_CARRIER_DOWN:
             break;
         default:
             span_log(&s->logging, SPAN_LOG_WARNING, "Unexpected special put bit value - %d!\n", bit);
@@ -293,21 +306,20 @@ static void adsi_tdd_put_async_byte(void *user_data, int byte)
     uint8_t octet;
     
     s = (adsi_rx_state_t *) user_data;
+    //printf("Rx bit %x\n", bit);
     if (byte < 0)
     {
         /* Special conditions */
+        span_log(&s->logging, SPAN_LOG_FLOW, "ADSI signal status is %s (%d)\n", signal_status_to_str(byte), byte);
         switch (byte)
         {
-        case PUTBIT_CARRIER_UP:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Carrier up.\n");
+        case SIG_STATUS_CARRIER_UP:
             s->consecutive_ones = 0;
             s->bit_pos = 0;
             s->in_progress = 0;
             s->msg_len = 0;
-            s->baudot_shift = 0;
             break;
-        case PUTBIT_CARRIER_DOWN:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Carrier down.\n");
+        case SIG_STATUS_CARRIER_DOWN:
             if (s->msg_len > 0)
             {
                 /* Whatever we have to date constitutes the message */
@@ -321,7 +333,7 @@ static void adsi_tdd_put_async_byte(void *user_data, int byte)
         }
         return;
     }
-    if ((octet = adsi_decode_baudot(s, (uint8_t) byte)))
+    if ((octet = adsi_decode_baudot(s, (uint8_t) (byte & 0x1F))))
         s->msg[s->msg_len++] = octet;
     if (s->msg_len >= 256)
     {
@@ -384,7 +396,7 @@ static void start_tx(adsi_tx_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-void adsi_rx(adsi_rx_state_t *s, const int16_t *amp, int len)
+SPAN_DECLARE(int) adsi_rx(adsi_rx_state_t *s, const int16_t amp[], int len)
 {
     switch (s->standard)
     {
@@ -399,13 +411,14 @@ void adsi_rx(adsi_rx_state_t *s, const int16_t *amp, int len)
         fsk_rx(&(s->fskrx), amp, len);
         break;
     }
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-adsi_rx_state_t *adsi_rx_init(adsi_rx_state_t *s,
-                              int standard,
-                              put_msg_func_t put_msg,
-                              void *user_data)
+SPAN_DECLARE(adsi_rx_state_t *) adsi_rx_init(adsi_rx_state_t *s,
+                                             int standard,
+                                             put_msg_func_t put_msg,
+                                             void *user_data)
 {
     if (s == NULL)
     {
@@ -418,19 +431,20 @@ adsi_rx_state_t *adsi_rx_init(adsi_rx_state_t *s,
     switch (standard)
     {
     case ADSI_STANDARD_CLASS:
-        fsk_rx_init(&(s->fskrx), &preset_fsk_specs[FSK_BELL202], FALSE, adsi_rx_put_bit, s);
+        fsk_rx_init(&(s->fskrx), &preset_fsk_specs[FSK_BELL202], FSK_FRAME_MODE_ASYNC, adsi_rx_put_bit, s);
         break;
     case ADSI_STANDARD_CLIP:
     case ADSI_STANDARD_ACLIP:
     case ADSI_STANDARD_JCLIP:
-        fsk_rx_init(&(s->fskrx), &preset_fsk_specs[FSK_V23CH1], FALSE, adsi_rx_put_bit, s);
+        fsk_rx_init(&(s->fskrx), &preset_fsk_specs[FSK_V23CH1], FSK_FRAME_MODE_ASYNC, adsi_rx_put_bit, s);
         break;
     case ADSI_STANDARD_CLIP_DTMF:
         dtmf_rx_init(&(s->dtmfrx), adsi_rx_dtmf, s);
         break;
     case ADSI_STANDARD_TDD:
-        fsk_rx_init(&(s->fskrx), &preset_fsk_specs[FSK_WEITBRECHT], FALSE, async_rx_put_bit, &(s->asyncrx));
-        async_rx_init(&(s->asyncrx), 5, ASYNC_PARITY_NONE, 2, TRUE, adsi_tdd_put_async_byte, s);
+        /* TDD uses 5 bit data, no parity and 1.5 stop bits. We scan for the first stop bit, and
+           ride over the fraction. */
+        fsk_rx_init(&(s->fskrx), &preset_fsk_specs[FSK_WEITBRECHT], FSK_FRAME_MODE_5N1_FRAMES, adsi_tdd_put_async_byte, s);
         break;
     }
     s->standard = standard;
@@ -439,7 +453,20 @@ adsi_rx_state_t *adsi_rx_init(adsi_rx_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int adsi_tx(adsi_tx_state_t *s, int16_t *amp, int max_len)
+SPAN_DECLARE(int) adsi_rx_release(adsi_rx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) adsi_rx_free(adsi_rx_state_t *s)
+{
+    free(s);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) adsi_tx(adsi_tx_state_t *s, int16_t amp[], int max_len)
 {
     int len;
     int lenx;
@@ -467,17 +494,17 @@ int adsi_tx(adsi_tx_state_t *s, int16_t *amp, int max_len)
 }
 /*- End of function --------------------------------------------------------*/
 
-void adsi_tx_send_alert_tone(adsi_tx_state_t *s)
+SPAN_DECLARE(void) adsi_tx_send_alert_tone(adsi_tx_state_t *s)
 {
     tone_gen_init(&(s->alert_tone_gen), &(s->alert_tone_desc));
 }
 /*- End of function --------------------------------------------------------*/
 
-void adsi_tx_set_preamble(adsi_tx_state_t *s,
-                          int preamble_len,
-                          int preamble_ones_len,
-                          int postamble_ones_len,
-                          int stop_bits)
+SPAN_DECLARE(void) adsi_tx_set_preamble(adsi_tx_state_t *s,
+                                        int preamble_len,
+                                        int preamble_ones_len,
+                                        int postamble_ones_len,
+                                        int stop_bits)
 {
     if (preamble_len < 0)
     {
@@ -526,7 +553,7 @@ void adsi_tx_set_preamble(adsi_tx_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int adsi_tx_put_message(adsi_tx_state_t *s, const uint8_t *msg, int len)
+SPAN_DECLARE(int) adsi_tx_put_message(adsi_tx_state_t *s, const uint8_t *msg, int len)
 {
     int i;
     int j;
@@ -615,7 +642,7 @@ int adsi_tx_put_message(adsi_tx_state_t *s, const uint8_t *msg, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-adsi_tx_state_t *adsi_tx_init(adsi_tx_state_t *s, int standard)
+SPAN_DECLARE(adsi_tx_state_t *) adsi_tx_init(adsi_tx_state_t *s, int standard)
 {
     if (s == NULL)
     {
@@ -638,6 +665,19 @@ adsi_tx_state_t *adsi_tx_init(adsi_tx_state_t *s, int standard)
     span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
     start_tx(s);
     return s;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) adsi_tx_release(adsi_tx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) adsi_tx_free(adsi_tx_state_t *s)
+{
+    free(s);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -823,7 +863,7 @@ static uint8_t adsi_decode_baudot(adsi_rx_state_t *s, uint8_t ch)
 }
 /*- End of function --------------------------------------------------------*/
 
-int adsi_next_field(adsi_rx_state_t *s, const uint8_t *msg, int msg_len, int pos, uint8_t *field_type, uint8_t const **field_body, int *field_len)
+SPAN_DECLARE(int) adsi_next_field(adsi_rx_state_t *s, const uint8_t *msg, int msg_len, int pos, uint8_t *field_type, uint8_t const **field_body, int *field_len)
 {
     int i;
 
@@ -943,7 +983,7 @@ int adsi_next_field(adsi_rx_state_t *s, const uint8_t *msg, int msg_len, int pos
 }
 /*- End of function --------------------------------------------------------*/
 
-int adsi_add_field(adsi_tx_state_t *s, uint8_t *msg, int len, uint8_t field_type, uint8_t const *field_body, int field_len)
+SPAN_DECLARE(int) adsi_add_field(adsi_tx_state_t *s, uint8_t *msg, int len, uint8_t field_type, uint8_t const *field_body, int field_len)
 {
     int i;
     int x;
@@ -1022,7 +1062,7 @@ int adsi_add_field(adsi_tx_state_t *s, uint8_t *msg, int len, uint8_t field_type
             if (field_type != CLIP_DTMF_HASH_UNSPECIFIED)
                 msg[len++] = field_type;
             memcpy(msg + len, field_body, field_len);
-            msg[len + field_len] = x;
+            msg[len + field_len] = (uint8_t) x;
             len += (field_len + 1);
         }
         break;
@@ -1045,7 +1085,7 @@ int adsi_add_field(adsi_tx_state_t *s, uint8_t *msg, int len, uint8_t field_type
 }
 /*- End of function --------------------------------------------------------*/
 
-const char *adsi_standard_to_str(int standard)
+SPAN_DECLARE(const char *) adsi_standard_to_str(int standard)
 {
     switch (standard)
     {

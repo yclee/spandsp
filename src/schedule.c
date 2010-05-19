@@ -10,23 +10,23 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: schedule.c,v 1.14 2007/07/09 15:29:49 steveu Exp $
+ * $Id: schedule.c,v 1.22 2009/02/10 13:06:46 steveu Exp $
  */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdio.h>
@@ -38,7 +38,10 @@
 #include "spandsp/logging.h"
 #include "spandsp/schedule.h"
 
-int span_schedule_event(span_sched_state_t *s, int us, span_sched_callback_func_t function, void *user_data)
+#include "spandsp/private/logging.h"
+#include "spandsp/private/schedule.h"
+
+SPAN_DECLARE(int) span_schedule_event(span_sched_state_t *s, int us, span_sched_callback_func_t function, void *user_data)
 {
     int i;
 
@@ -65,7 +68,7 @@ int span_schedule_event(span_sched_state_t *s, int us, span_sched_callback_func_
 }
 /*- End of function --------------------------------------------------------*/
 
-uint64_t span_schedule_next(span_sched_state_t *s)
+SPAN_DECLARE(uint64_t) span_schedule_next(span_sched_state_t *s)
 {
     int i;
     uint64_t earliest;
@@ -82,13 +85,13 @@ uint64_t span_schedule_next(span_sched_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-uint64_t span_schedule_time(span_sched_state_t *s)
+SPAN_DECLARE(uint64_t) span_schedule_time(span_sched_state_t *s)
 {
     return s->ticker;
 }
 /*- End of function --------------------------------------------------------*/
 
-void span_schedule_update(span_sched_state_t *s, int us)
+SPAN_DECLARE(void) span_schedule_update(span_sched_state_t *s, int us)
 {
     int i;
     span_sched_callback_func_t callback;
@@ -111,7 +114,7 @@ void span_schedule_update(span_sched_state_t *s, int us)
 }
 /*- End of function --------------------------------------------------------*/
 
-void span_schedule_del(span_sched_state_t *s, int i)
+SPAN_DECLARE(void) span_schedule_del(span_sched_state_t *s, int i)
 {
     if (i >= s->max_to_date
         ||
@@ -127,7 +130,7 @@ void span_schedule_del(span_sched_state_t *s, int i)
 }
 /*- End of function --------------------------------------------------------*/
 
-span_sched_state_t *span_schedule_init(span_sched_state_t *s)
+SPAN_DECLARE(span_sched_state_t *) span_schedule_init(span_sched_state_t *s)
 {
     memset(s, 0, sizeof(*s));
     span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
@@ -136,13 +139,22 @@ span_sched_state_t *span_schedule_init(span_sched_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int span_schedule_release(span_sched_state_t *s)
+SPAN_DECLARE(int) span_schedule_release(span_sched_state_t *s)
 {
     if (s->sched)
     {
         free(s->sched);
         s->sched = NULL;
     }
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) span_schedule_free(span_sched_state_t *s)
+{
+    span_schedule_release(s);
+    if (s)
+        free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/

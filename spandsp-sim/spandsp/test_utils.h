@@ -10,25 +10,27 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: test_utils.h,v 1.1 2007/04/03 12:59:32 steveu Exp $
+ * $Id: test_utils.h,v 1.9 2009/05/31 14:47:10 steveu Exp $
  */
 
 /*! \file */
 
 #if !defined(_TEST_UTILS_H_)
 #define _TEST_UTILS_H_
+
+#include <sndfile.h>
 
 enum
 {
@@ -49,17 +51,25 @@ typedef struct complexify_state_s complexify_state_t;
 extern "C" {
 #endif
 
-complexify_state_t *complexify_init(void);
+SPAN_DECLARE(complexify_state_t *) complexify_init(void);
 
-void complexify_release(complexify_state_t *s);
+SPAN_DECLARE(void) complexify_release(complexify_state_t *s);
 
-complexf_t complexify(complexify_state_t *s, int16_t amp);
+SPAN_DECLARE(complexf_t) complexify(complexify_state_t *s, int16_t amp);
 
-codec_munge_state_t *codec_munge_init(int codec, int info);
+SPAN_DECLARE(void) fft(complex_t data[], int len);
 
-void codec_munge_release(codec_munge_state_t *s);
+SPAN_DECLARE(void) ifft(complex_t data[], int len);
 
-void codec_munge(codec_munge_state_t *s, int16_t amp[], int len);
+SPAN_DECLARE(codec_munge_state_t *) codec_munge_init(int codec, int info);
+
+SPAN_DECLARE(void) codec_munge_release(codec_munge_state_t *s);
+
+SPAN_DECLARE(void) codec_munge(codec_munge_state_t *s, int16_t amp[], int len);
+
+SPAN_DECLARE(SNDFILE *) sf_open_telephony_read(const char *name, int channels);
+
+SPAN_DECLARE(SNDFILE *) sf_open_telephony_write(const char *name, int channels);
 
 #ifdef __cplusplus
 }

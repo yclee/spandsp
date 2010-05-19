@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: complex_vector_float.h,v 1.6 2007/04/08 08:16:17 steveu Exp $
+ * $Id: complex_vector_float.h,v 1.13 2009/02/04 13:18:53 steveu Exp $
  */
 
 #if !defined(_SPANDSP_COMPLEX_VECTOR_FLOAT_H_)
@@ -119,6 +119,50 @@ static __inline__ void cvec_setl(complexl_t z[], complexl_t *x, int n)
 }
 /*- End of function --------------------------------------------------------*/
 #endif
+
+SPAN_DECLARE(void) cvec_mulf(complexf_t z[], const complexf_t x[], const complexf_t y[], int n);
+
+SPAN_DECLARE(void) cvec_mul(complex_t z[], const complex_t x[], const complex_t y[], int n);
+
+#if defined(HAVE_LONG_DOUBLE)
+SPAN_DECLARE(void) cvec_mull(complexl_t z[], const complexl_t x[], const complexl_t y[], int n);
+#endif
+
+/*! \brief Find the dot product of two complex float vectors.
+    \param x The first vector.
+    \param y The first vector.
+    \param n The number of elements in the vectors.
+    \return The dot product of the two vectors. */
+SPAN_DECLARE(complexf_t) cvec_dot_prodf(const complexf_t x[], const complexf_t y[], int n);
+
+/*! \brief Find the dot product of two complex double vectors.
+    \param x The first vector.
+    \param y The first vector.
+    \param n The number of elements in the vectors.
+    \return The dot product of the two vectors. */
+SPAN_DECLARE(complex_t) cvec_dot_prod(const complex_t x[], const complex_t y[], int n);
+
+#if defined(HAVE_LONG_DOUBLE)
+/*! \brief Find the dot product of two complex long double vectors.
+    \param x The first vector.
+    \param y The first vector.
+    \param n The number of elements in the vectors.
+    \return The dot product of the two vectors. */
+SPAN_DECLARE(complexl_t) cvec_dot_prodl(const complexl_t x[], const complexl_t y[], int n);
+#endif
+
+/*! \brief Find the dot product of two complex float vectors, where the first is a circular buffer
+           with an offset for the starting position.
+    \param x The first vector.
+    \param y The first vector.
+    \param n The number of elements in the vectors.
+    \param pos The starting position in the x vector.
+    \return The dot product of the two vectors. */
+SPAN_DECLARE(complexf_t) cvec_circular_dot_prodf(const complexf_t x[], const complexf_t y[], int n, int pos);
+
+SPAN_DECLARE(void) cvec_lmsf(const complexf_t x[], complexf_t y[], int n, const complexf_t *error);
+
+SPAN_DECLARE(void) cvec_circular_lmsf(const complexf_t x[], complexf_t y[], int n, int pos, const complexf_t *error);
 
 #if defined(__cplusplus)
 }

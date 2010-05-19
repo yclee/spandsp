@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: awgn.h,v 1.12 2007/11/26 13:28:59 steveu Exp $
+ * $Id: awgn.h,v 1.18 2009/02/10 13:06:47 steveu Exp $
  */
 
 /*! \file */
@@ -71,27 +71,22 @@ optimised.
 /*!
     AWGN generator descriptor. This contains all the state information for an AWGN generator.
  */
-typedef struct
-{
-    double rms;
-    long int ix1;
-    long int ix2;
-    long int ix3;
-    double r[98];
-    double gset;
-    int iset;
-} awgn_state_t;
+typedef struct awgn_state_s awgn_state_t;
 
 #if defined(__cplusplus)
 extern "C"
 {
 #endif
 
-awgn_state_t *awgn_init_dbm0(awgn_state_t *s, int idum, float level);
+SPAN_DECLARE(awgn_state_t *) awgn_init_dbm0(awgn_state_t *s, int idum, float level);
 
-awgn_state_t *awgn_init_dbov(awgn_state_t *s, int idum, float level);
+SPAN_DECLARE(awgn_state_t *) awgn_init_dbov(awgn_state_t *s, int idum, float level);
 
-int16_t awgn(awgn_state_t *s);
+SPAN_DECLARE(int) awgn_release(awgn_state_t *s);
+
+SPAN_DECLARE(int) awgn_free(awgn_state_t *s);
+
+SPAN_DECLARE(int16_t) awgn(awgn_state_t *s);
 
 #if defined(__cplusplus)
 }

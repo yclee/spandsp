@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v42_tests.c,v 1.21 2007/11/10 11:14:59 steveu Exp $
+ * $Id: v42_tests.c,v 1.28 2008/11/30 10:17:31 steveu Exp $
  */
 
 /* THIS IS A WORK IN PROGRESS. IT IS NOT FINISHED. */
@@ -33,7 +33,7 @@ These tests connect two instances of V.42 back to back. V.42 frames are
 then exchanged between them.
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include <config.h>
 #endif
 
@@ -41,6 +41,10 @@ then exchanged between them.
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 

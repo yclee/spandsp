@@ -5,30 +5,30 @@
  *
  * Written by Steve Underwood <steveu@coppice.org>
  *
- * Copyright (C) 2003, 2004, 2005, 2006, 2007 Steve Underwood
+ * Copyright (C) 2003, 2004, 2005, 2006, 2007, 2008, 2009 Steve Underwood
  *
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: t30.c,v 1.214 2007/11/30 12:20:34 steveu Exp $
+ * $Id: t30.c,v 1.305.4.4 2009/12/23 14:23:49 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -43,6 +43,7 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <tiffio.h>
 
 #include "spandsp/telephony.h"
@@ -59,21 +60,29 @@
 #include "spandsp/v29tx.h"
 #include "spandsp/v27ter_rx.h"
 #include "spandsp/v27ter_tx.h"
-#include "spandsp/t4.h"
-
+#include "spandsp/t4_rx.h"
+#include "spandsp/t4_tx.h"
 #include "spandsp/t30_fcf.h"
 #include "spandsp/t35.h"
 #include "spandsp/t30.h"
+#include "spandsp/t30_api.h"
+#include "spandsp/t30_logging.h"
 
-#define MAX_MESSAGE_TRIES   3
+#include "spandsp/private/logging.h"
+#include "spandsp/private/t4_rx.h"
+#include "spandsp/private/t4_tx.h"
+#include "spandsp/private/t30.h"
+#include "spandsp/private/t30_dis_dtc_dcs_bits.h"
 
-#define ms_to_samples(t)    (((t)*SAMPLE_RATE)/1000)
+#include "t30_local.h"
 
-typedef struct
-{
-    int val;
-    const char *str;
-} value_string_t;
+/*! The maximum permitted number of retries of a single command allowed. */
+#define MAX_COMMAND_TRIES   3
+
+/*! The maximum permitted number of retries of a single response request allowed. This
+    is not specified in T.30. However, if you don't apply some limit a messed up FAX
+    terminal could keep you retrying all day. Its a backstop protection. */
+#define MAX_RESPONSE_TRIES  6
 
 /* T.30 defines the following call phases:
    Phase A: Call set-up.
@@ -172,9 +181,12 @@ enum
     T30_MODE_RECEIVE_DOC
 };
 
+/*! These are internal assessments of received image quality, used to determine whether we
+    continue, retrain, or abandon the call. */
 enum
 {
-    T30_COPY_QUALITY_GOOD = 0,
+    T30_COPY_QUALITY_PERFECT = 0,
+    T30_COPY_QUALITY_GOOD,
     T30_COPY_QUALITY_POOR,
     T30_COPY_QUALITY_BAD
 };
@@ -191,68 +203,147 @@ enum
     DISBIT8 = 0x80
 };
 
+/*! There are high level indications of what is happening at any instant, to guide the cleanup
+    process if the call is abandoned. */
+enum
+{
+    OPERATION_IN_PROGRESS_NONE = 0,
+    OPERATION_IN_PROGRESS_T4_RX,
+    OPERATION_IN_PROGRESS_T4_TX
+};
+
 /* All timers specified in milliseconds */
 
-/* Time-out T0 defines the amount of time an automatic calling terminal waits for the called terminal
-to answer the call.
-T0 begins after the dialling of the number is completed and is reset:
-a)       when T0 times out; or
-b)       when timer T1 is started; or
-c)       if the terminal is capable of detecting any condition which indicates that the call will not be
-         successful, when such a condition is detected.
-The recommended value of T0 is 60+-5s; however, when it is anticipated that a long call set-up
-time may be encountered, an alternative value of up to 120s may be used.
-NOTE - National regulations may require the use of other values for T0. */
+/*! Time-out T0 defines the amount of time an automatic calling terminal waits for the called terminal
+    to answer the call.
+    T0 begins after the dialling of the number is completed and is reset:
+    a) when T0 times out; or
+    b) when timer T1 is started; or
+    c) if the terminal is capable of detecting any condition which indicates that the call will not be
+       successful, when such a condition is detected.
+    The recommended value of T0 is 60+-5s. However, when it is anticipated that a long call set-up
+    time may be encountered, an alternative value of up to 120s may be used.
+    NOTE - National regulations may require the use of other values for T0. */
 #define DEFAULT_TIMER_T0                60000
 
-/* Time-out T1 defines the amount of time two terminals will continue to attempt to identify each
-other. T1 is 35+-5s, begins upon entering phase B, and is reset upon detecting a valid signal or
-when T1 times out.
-For operating methods 3 and 4 (see 3.1), the calling terminal starts time-out T1 upon reception of
-the V.21 modulation scheme.
-For operating method 4 bis a (see 3.1), the calling terminal starts time-out T1 upon starting
-transmission using the V.21 modulation scheme. */
+/*! Time-out T1 defines the amount of time two terminals will continue to attempt to identify each
+    other. T1 is 35+-5s, begins upon entering phase B, and is reset upon detecting a valid signal or
+    when T1 times out.
+    For operating methods 3 and 4 (see 3.1), the calling terminal starts time-out T1 upon reception of
+    the V.21 modulation scheme.
+    For operating method 4 bis a (see 3.1), the calling terminal starts time-out T1 upon starting
+    transmission using the V.21 modulation scheme.
+    Annex A says T1 is also the timeout to be used for the receipt of the first HDLC frame after the
+    start of high speed flags in ECM mode. This seems a strange reuse of the T1 name, so we distinguish
+    it here by calling it T1A. */
 #define DEFAULT_TIMER_T1                35000
+#define DEFAULT_TIMER_T1A               35000
 
-/* Time-out T2 makes use of the tight control between commands and responses to detect the loss of
-command/response synchronization. T2 is 6+-1s and begins when initiating a command search
-(e.g., the first entrance into the "command received" subroutine, reference flow diagram in 5.2).
-T2 is reset when an HDLC flag is received or when T2 times out. */
+/*! Time-out T2 makes use of the tight control between commands and responses to detect the loss of
+    command/response synchronization. T2 is 6+-1s, and begins when initiating a command search
+    (e.g., the first entrance into the "command received" subroutine, reference flow diagram in section 5.2).
+    T2 is reset when an HDLC flag is received or when T2 times out. */
 #define DEFAULT_TIMER_T2                7000
 
-/* Time-out T3 defines the amount of time a terminal will attempt to alert the local operator in
-response to a procedural interrupt. Failing to achieve operator intervention, the terminal will
-discontinue this attempt and shall issue other commands or responses. T3 is 10+-5s, begins on the
-first detection of a procedural interrupt command/response signal (i.e., PIN/PIP or PRI-Q) and is
-reset when T3 times out or when the operator initiates a line request. */
+/*! Once HDLC flags begin, T2 is reset, and a 3s timer begins. This timer is unnamed in T.30. Here we
+    term it T2A. No tolerance is specified for this timer. T2A specifies the maximum time to wait for the
+    end of a frame, after the initial flag has been seen. */
+#define DEFAULT_TIMER_T2A               3000
+
+/*! If the HDLC carrier falls during reception, we need to apply a minimum time before continuing. If we
+    don't, there are circumstances where we could continue and reply before the incoming signals have
+    really finished. E.g. if a bad DCS is received in a DCS-TCF sequence, we need wait for the TCF
+    carrier to pass, before continuing. This timer is specified as 200ms, but no tolerance is specified.
+    It is unnamed in T.30. Here we term it T2B */
+#define DEFAULT_TIMER_T2B               200
+
+/*! Time-out T3 defines the amount of time a terminal will attempt to alert the local operator in
+    response to a procedural interrupt. Failing to achieve operator intervention, the terminal will
+    discontinue this attempt and shall issue other commands or responses. T3 is 10+-5s, begins on the
+    first detection of a procedural interrupt command/response signal (i.e., PIN/PIP or PRI-Q) and is
+    reset when T3 times out or when the operator initiates a line request. */
 #define DEFAULT_TIMER_T3                15000
 
-/* NOTE - For manual FAX units, the value of timer T4 may be either 3.0s +-15% or 4.5s +-15%.
-If the value of 4.5s is used, then after detection of a valid response to the first DIS, it may
-be reduced to 3.0s +-15%. T4 = 3.0s +-15% for automatic units. */
+/*! Time-out T4 defines the amount of time a terminal will wait for flags to begin, when waiting for a
+    response from a remote terminal. T2 is 3s +-15%, and begins when initiating a response search
+    (e.g., the first entrance into the "response received" subroutine, reference flow diagram in section 5.2).
+    T4 is reset when an HDLC flag is received or when T4 times out.
+    NOTE - For manual FAX units, the value of timer T4 may be either 3.0s +-15% or 4.5s +-15%.
+    If the value of 4.5s is used, then after detection of a valid response to the first DIS, it may
+    be reduced to 3.0s +-15%. T4 = 3.0s +-15% for automatic units. */
 #define DEFAULT_TIMER_T4                3450
 
-/* Time-out T5 is defined for the optional T.4 error correction mode. Time-out T5 defines the amount
-of time waiting for clearance of the busy condition of the receiving terminal. T5 is 60+-5s and
-begins on the first detection of the RNR response. T5 is reset when T5 times out or the MCF or PIP
-response is received or when the ERR or PIN response is received in the flow control process after
-transmitting the EOR command. If the timer T5 has expired, the DCN command is transmitted for
-call release. */
+/*! Once HDLC flags begin, T4 is reset, and a 3s timer begins. This timer is unnamed in T.30. Here we
+    term it T4A. No tolerance is specified for this timer. T4A specifies the maximum time to wait for the
+    end of a frame, after the initial flag has been seen. Note that a different timer is used for the fast
+    HDLC in ECM mode, to provide time for physical paper handling. */
+#define DEFAULT_TIMER_T4A               3000
+
+/*! If the HDLC carrier falls during reception, we need to apply a minimum time before continuing. if we
+    don't, there are circumstances where we could continue and reply before the incoming signals have
+    really finished. E.g. if a bad DCS is received in a DCS-TCF sequence, we need wait for the TCF
+    carrier to pass, before continuing. This timer is specified as 200ms, but no tolerance is specified.
+    It is unnamed in T.30. Here we term it T4B */
+#define DEFAULT_TIMER_T4B               200
+
+/*! Time-out T5 is defined for the optional T.4 error correction mode. Time-out T5 defines the amount
+    of time waiting for clearance of the busy condition of the receiving terminal. T5 is 60+-5s and
+    begins on the first detection of the RNR response. T5 is reset when T5 times out or the MCF or PIP
+    response is received or when the ERR or PIN response is received in the flow control process after
+    transmitting the EOR command. If the timer T5 has expired, the DCN command is transmitted for
+    call release. */
 #define DEFAULT_TIMER_T5                65000
 
+/*! (Annex C - ISDN) Time-out T6 defines the amount of time two terminals will continue to attempt to
+    identify each other. T6 is 5+-0.5s. The timeout begins upon entering Phase B, and is reset upon
+    detecting a valid signal, or when T6 times out. */
 #define DEFAULT_TIMER_T6                5000
 
-#define DEFAULT_TIMER_T7                6000
+/*! (Annex C - ISDN) Time-out T7 is used to detect loss of command/response synchronization. T7 is 6+-1s.
+    The timeout begins when initiating a command search (e.g., the first entrance into the "command received"
+    subroutine - see flow diagram in C.5) and is reset upon detecting a valid signal or when T7 times out. */
+#define DEFAULT_TIMER_T7                7000
 
+/*! (Annex C - ISDN) Time-out T8 defines the amount of time waiting for clearance of the busy condition
+    of the receiving terminal. T8 is 10+-1s. The timeout begins on the first detection of the combination
+    of no outstanding corrections and the RNR response. T8 is reset when T8 times out or MCF response is
+    received. If the timer T8 expires, a DCN command is transmitted for call release. */
 #define DEFAULT_TIMER_T8                10000
 
-/* Final time we allow for things to flush through the system, before we disconnect, in milliseconds.
-   200ms should be fine for a PSTN call. For a T.38 call something longer is desirable. */
+/*! Final time we allow for things to flush through the system, before we disconnect, in milliseconds.
+    200ms should be fine for a PSTN call. For a T.38 call something longer is desirable. */
 #define FINAL_FLUSH_TIME                1000
 
+/*! The number of PPRs received before CTC or EOR is sent in ECM mode. T.30 defines this as 4,
+    but it could be varied, and the Japanese spec, for example, does make this value a
+    variable. */
+#define PPR_LIMIT_BEFORE_CTC_OR_EOR     4
+
+/* HDLC message header byte values */
+#define ADDRESS_FIELD                   0xFF
+#define CONTROL_FIELD_NON_FINAL_FRAME   0x03
+#define CONTROL_FIELD_FINAL_FRAME       0x13
+
+enum
+{
+    TIMER_IS_IDLE = 0,
+    TIMER_IS_T2,
+    TIMER_IS_T1A,
+    TIMER_IS_T2A,
+    TIMER_IS_T2B,
+    TIMER_IS_T2C,
+    TIMER_IS_T4,
+    TIMER_IS_T4A,
+    TIMER_IS_T4B,
+    TIMER_IS_T4C
+};
+
 /* Start points in the fallback table for different capabilities */
+/*! The starting point in the modem fallback sequence if V.17 is allowed */
 #define T30_V17_FALLBACK_START          0
+/*! The starting point in the modem fallback sequence if V.17 is not allowed */
 #define T30_V29_FALLBACK_START          3
+/*! The starting point in the modem fallback sequence if V.29 is not allowed */
 #define T30_V27TER_FALLBACK_START       6
 
 static const struct
@@ -263,14 +354,14 @@ static const struct
     uint8_t dcs_code;
 } fallback_sequence[] =
 {
-    {14400, T30_MODEM_V17_14400,    T30_SUPPORT_V17,    DISBIT6},
-    {12000, T30_MODEM_V17_12000,    T30_SUPPORT_V17,    (DISBIT6 | DISBIT4)},
-    { 9600, T30_MODEM_V17_9600,     T30_SUPPORT_V17,    (DISBIT6 | DISBIT3)},
-    { 9600, T30_MODEM_V29_9600,     T30_SUPPORT_V29,    DISBIT3},
-    { 7200, T30_MODEM_V17_7200,     T30_SUPPORT_V17,    (DISBIT6 | DISBIT4 | DISBIT3)},
-    { 7200, T30_MODEM_V29_7200,     T30_SUPPORT_V29,    (DISBIT4 | DISBIT3)},
-    { 4800, T30_MODEM_V27TER_4800,  T30_SUPPORT_V27TER, DISBIT4},
-    { 2400, T30_MODEM_V27TER_2400,  T30_SUPPORT_V27TER, 0},
+    {14400, T30_MODEM_V17,      T30_SUPPORT_V17,    DISBIT6},
+    {12000, T30_MODEM_V17,      T30_SUPPORT_V17,    (DISBIT6 | DISBIT4)},
+    { 9600, T30_MODEM_V17,      T30_SUPPORT_V17,    (DISBIT6 | DISBIT3)},
+    { 9600, T30_MODEM_V29,      T30_SUPPORT_V29,    DISBIT3},
+    { 7200, T30_MODEM_V17,      T30_SUPPORT_V17,    (DISBIT6 | DISBIT4 | DISBIT3)},
+    { 7200, T30_MODEM_V29,      T30_SUPPORT_V29,    (DISBIT4 | DISBIT3)},
+    { 4800, T30_MODEM_V27TER,   T30_SUPPORT_V27TER, DISBIT4},
+    { 2400, T30_MODEM_V27TER,   T30_SUPPORT_V27TER, 0},
     {    0, 0, 0, 0}
 };
 
@@ -284,504 +375,262 @@ static void repeat_last_command(t30_state_t *s);
 static void disconnect(t30_state_t *s);
 static void decode_20digit_msg(t30_state_t *s, char *msg, const uint8_t *pkt, int len);
 static void decode_url_msg(t30_state_t *s, char *msg, const uint8_t *pkt, int len);
+static int set_min_scan_time_code(t30_state_t *s);
+static int send_cfr_sequence(t30_state_t *s, int start);
+static void timer_t2_start(t30_state_t *s);
+static void timer_t2a_start(t30_state_t *s);
+static void timer_t2b_start(t30_state_t *s);
+static void timer_t4_start(t30_state_t *s);
+static void timer_t4a_start(t30_state_t *s);
+static void timer_t4b_start(t30_state_t *s);
+static void timer_t2_t4_stop(t30_state_t *s);
 
-#define set_dis_dtc_bit(s,bit) s->dis_dtc_frame[3 + ((bit - 1)/8)] |= (1 << ((bit - 1)%8))
-#define set_dis_dtc_bits(s,val,bit) s->dis_dtc_frame[3 + ((bit - 1)/8)] |= ((val) << ((bit - 1)%8))
-#define clr_dis_dtc_bit(s,bit) s->dis_dtc_frame[3 + ((bit - 1)/8)] &= ~(1 << ((bit - 1)%8))
+/*! Test a specified bit within a DIS, DTC or DCS frame */
+#define test_ctrl_bit(s,bit) ((s)[3 + ((bit - 1)/8)] & (1 << ((bit - 1)%8)))
+/*! Set a specified bit within a DIS, DTC or DCS frame */
+#define set_ctrl_bit(s,bit) (s)[3 + ((bit - 1)/8)] |= (1 << ((bit - 1)%8))
+/*! Set a specified block of bits within a DIS, DTC or DCS frame */
+#define set_ctrl_bits(s,val,bit) (s)[3 + ((bit - 1)/8)] |= ((val) << ((bit - 1)%8))
+/*! Clear a specified bit within a DIS, DTC or DCS frame */
+#define clr_ctrl_bit(s,bit) (s)[3 + ((bit - 1)/8)] &= ~(1 << ((bit - 1)%8))
 
-#define test_bit(s,bit) (s[3 + ((bit - 1)/8)] & (1 << ((bit - 1)%8)))
+static int terminate_operation_in_progress(t30_state_t *s)
+{
+    /* Make sure any FAX in progress is tidied up. If the tidying up has
+       already happened, repeating it here is harmless. */
+    switch (s->operation_in_progress)
+    {
+    case OPERATION_IN_PROGRESS_T4_TX:
+        t4_tx_release(&s->t4);
+        break;
+    case OPERATION_IN_PROGRESS_T4_RX:
+        t4_rx_release(&s->t4);
+        break;
+    }
+    s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
 
-#define set_dcs_bit(s,bit) s->dcs_frame[3 + ((bit - 1)/8)] |= (1 << ((bit - 1)%8))
-#define set_dcs_bits(s,val,bit) s->dcs_frame[3 + ((bit - 1)/8)] |= ((val) << ((bit - 1)%8))
-#define clr_dcs_bit(s,bit) s->dcs_frame[3 + ((bit - 1)/8)] &= ~(1 << ((bit - 1)%8))
+static int tx_start_page(t30_state_t *s)
+{
+    if (t4_tx_start_page(&s->t4))
+    {
+        terminate_operation_in_progress(s);
+        return -1;
+    }
+    s->ecm_block = 0;
+    s->error_correcting_mode_retries = 0;
+    span_log(&s->logging, SPAN_LOG_FLOW, "Starting page %d of transfer\n", s->tx_page_number + 1);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
 
-static void rx_start_page(t30_state_t *s)
+static int tx_end_page(t30_state_t *s)
+{
+    s->retries = 0;
+    if (t4_tx_end_page(&s->t4) == 0)
+    {
+        s->tx_page_number++;
+        s->ecm_block = 0;
+    }
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int rx_start_page(t30_state_t *s)
 {
     int i;
 
-    t4_rx_set_image_width(&(s->t4), s->image_width);
-    t4_rx_set_sub_address(&(s->t4), s->far_sub_address);
-    t4_rx_set_dcs(&(s->t4), s->rx_dcs_string);
-    t4_rx_set_far_ident(&(s->t4), s->far_ident);
-    t4_rx_set_vendor(&(s->t4), s->vendor);
-    t4_rx_set_model(&(s->t4), s->model);
+    t4_rx_set_image_width(&s->t4, s->image_width);
+    t4_rx_set_sub_address(&s->t4, s->rx_info.sub_address);
+    t4_rx_set_dcs(&s->t4, s->rx_dcs_string);
+    t4_rx_set_far_ident(&s->t4, s->rx_info.ident);
+    t4_rx_set_vendor(&s->t4, s->vendor);
+    t4_rx_set_model(&s->t4, s->model);
 
-    t4_rx_set_rx_encoding(&(s->t4), s->line_encoding);
-    t4_rx_set_x_resolution(&(s->t4), s->x_resolution);
-    t4_rx_set_y_resolution(&(s->t4), s->y_resolution);
+    t4_rx_set_rx_encoding(&s->t4, s->line_encoding);
+    t4_rx_set_x_resolution(&s->t4, s->x_resolution);
+    t4_rx_set_y_resolution(&s->t4, s->y_resolution);
 
-    t4_rx_start_page(&(s->t4));
+    if (t4_rx_start_page(&s->t4))
+        return -1;
     /* Clear the buffer */
     for (i = 0;  i < 256;  i++)
         s->ecm_len[i] = -1;
-    s->ecm_page++;
     s->ecm_block = 0;
     s->ecm_frames = -1;
-    s->ecm_frames_this_burst = 0;
+    s->ecm_frames_this_tx_burst = 0;
+    s->error_correcting_mode_retries = 0;
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int rx_end_page(t30_state_t *s)
+{
+    if (t4_rx_end_page(&s->t4) == 0)
+    {
+        s->rx_page_number++;
+        s->ecm_block = 0;
+    }
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
 static int copy_quality(t30_state_t *s)
 {
     t4_stats_t stats;
+    int quality;
 
+    t4_get_transfer_statistics(&s->t4, &stats);
     /* There is no specification for judging copy quality. However, we need to classify
        it at three levels, to control what we do next: OK; tolerable, but retrain;
-       intolerable, so retrain. */
-    t4_get_transfer_statistics(&(s->t4), &stats);
+       intolerable. */
+    /* Based on the thresholds used in the TSB85 tests, we consider:
+            <5% bad rows is OK
+            <15% bad rows to be tolerable, but retrain
+            >15% bad rows to be intolerable
+     */
     span_log(&s->logging, SPAN_LOG_FLOW, "Page no = %d\n", stats.pages_transferred + 1);
     span_log(&s->logging, SPAN_LOG_FLOW, "Image size = %d x %d pixels\n", stats.width, stats.length);
     span_log(&s->logging, SPAN_LOG_FLOW, "Image resolution = %d/m x %d/m\n", stats.x_resolution, stats.y_resolution);
     span_log(&s->logging, SPAN_LOG_FLOW, "Bad rows = %d\n", stats.bad_rows);
     span_log(&s->logging, SPAN_LOG_FLOW, "Longest bad row run = %d\n", stats.longest_bad_row_run);
-    if (stats.bad_rows*50 < stats.length)
-        return T30_COPY_QUALITY_GOOD;
-    if (stats.bad_rows*20 < stats.length)
-        return T30_COPY_QUALITY_POOR;
-    return T30_COPY_QUALITY_BAD;
+    /* Don't treat a page as perfect because it has zero bad rows out of zero total rows. A zero row
+       page has got to be some kind of total page failure. */
+    if (stats.bad_rows == 0  &&  stats.length != 0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Page quality is perfect\n");
+        quality = T30_COPY_QUALITY_PERFECT;
+    }
+    else if (stats.bad_rows*20 < stats.length)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Page quality is good\n");
+        quality = T30_COPY_QUALITY_GOOD;
+    }
+    else if (stats.bad_rows*20 < stats.length*3)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Page quality is poor\n");
+        quality = T30_COPY_QUALITY_POOR;
+    }
+    else
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Page quality is bad\n");
+        quality = T30_COPY_QUALITY_BAD;
+    }
+    return quality;
 }
 /*- End of function --------------------------------------------------------*/
 
-const char *t30_completion_code_to_str(int result)
+static void release_resources(t30_state_t *s)
 {
-    switch (result)
+    if (s->tx_info.nsf)
     {
-    case T30_ERR_OK:
-        return "OK";
-    case T30_ERR_CEDTONE:
-        return "The CED tone exceeded 5s";
-    case T30_ERR_T0_EXPIRED:
-        return "Timed out waiting for initial communication";
-    case T30_ERR_T1_EXPIRED:
-        return "Timed out waiting for the first message";
-    case T30_ERR_T3_EXPIRED:
-        return "Timed out waiting for procedural interrupt";
-    case T30_ERR_HDLC_CARRIER:
-        return "The HDLC carrier did not stop in a timely manner";
-    case T30_ERR_CANNOT_TRAIN:
-        return "Failed to train with any of the compatible modems";
-    case T30_ERR_OPERINTFAIL:
-        return "Operator intervention failed";
-    case T30_ERR_INCOMPATIBLE:
-        return "Far end is not compatible";
-    case T30_ERR_RX_INCAPABLE:
-        return "Far end is not able to receive";
-    case T30_ERR_TX_INCAPABLE:
-        return "Far end is not able to transmit";
-    case T30_ERR_NORESSUPPORT:
-        return "Far end cannot receive at the resolution of the image";
-    case T30_ERR_NOSIZESUPPORT:
-        return "Far end cannot receive at the size of image";
-    case T30_ERR_UNEXPECTED:
-        return "Unexpected message received";
-    case T30_ERR_FILEERROR:
-        return "TIFF/F file cannot be opened";
-    case T30_ERR_NOPAGE:
-        return "TIFF/F page not found";
-    case T30_ERR_BADTIFF:
-        return "TIFF/F format is not compatible";
-    case T30_ERR_BADDCSTX:
-        return "Received bad response to DCS or training";
-    case T30_ERR_BADPGTX:
-        return "Received a DCN from remote after sending a page";
-    case T30_ERR_ECMPHDTX:
-        return "Invalid ECM response received from receiver";
-    case T30_ERR_T5_EXPIRED:
-        return "Timed out waiting for receiver ready (ECM mode)";
-    case T30_ERR_GOTDCNTX:
-        return "Received a DCN while waiting for a DIS";
-    case T30_ERR_INVALRSPTX:
-        return "Invalid response after sending a page";
-    case T30_ERR_NODISTX:
-        return "Received other than DIS while waiting for DIS";
-    case T30_ERR_PHBDEADTX:
-        return "Received no response to DCS or TCF";
-    case T30_ERR_PHDDEADTX:
-        return "No response after sending a page";
-    case T30_ERR_ECMPHDRX:
-        return "Invalid ECM response received from transmitter";
-    case T30_ERR_GOTDCSRX:
-        return "DCS received while waiting for DTC";
-    case T30_ERR_INVALCMDRX:
-        return "Unexpected command after page received";
-    case T30_ERR_NOCARRIERRX:
-        return "Carrier lost during fax receive";
-    case T30_ERR_NOEOLRX:
-        return "Timed out while waiting for EOL (end Of line)";
-    case T30_ERR_NOFAXRX:
-        return "Timed out while waiting for first line";
-    case T30_ERR_T2EXPDCNRX:
-        return "Timer T2 expired while waiting for DCN";
-    case T30_ERR_T2EXPDRX:
-        return "Timer T2 expired while waiting for phase D";
-    case T30_ERR_T2EXPFAXRX:
-        return "Timer T2 expired while waiting for fax page";
-    case T30_ERR_T2EXPMPSRX:
-        return "Timer T2 expired while waiting for next fax page";
-    case T30_ERR_T2EXPRRRX:
-        return "Timer T2 expired while waiting for RR command";
-    case T30_ERR_T2EXPRX:
-        return "Timer T2 expired while waiting for NSS, DCS or MCF";
-    case T30_ERR_DCNWHYRX:
-        return "Unexpected DCN while waiting for DCS or DIS";
-    case T30_ERR_DCNDATARX:
-        return "Unexpected DCN while waiting for image data";
-    case T30_ERR_DCNFAXRX:
-        return "Unexpected DCN while waiting for EOM, EOP or MPS";
-    case T30_ERR_DCNPHDRX:
-        return "Unexpected DCN after EOM or MPS sequence";
-    case T30_ERR_DCNRRDRX:
-        return "Unexpected DCN after RR/RNR sequence";
-    case T30_ERR_DCNNORTNRX:
-        return "Unexpected DCN after requested retransmission";
-    case T30_ERR_BADPAGE:
-        return "TIFF/F page number tag missing";
-    case T30_ERR_BADTAG:
-        return "Incorrect values for TIFF/F tags";
-    case T30_ERR_BADTIFFHDR:
-        return "Bad TIFF/F header - incorrect values in fields";
-    case T30_ERR_NODATA:
-        return "Data requested is not available (NSF, DIS, DCS)";
-    case T30_ERR_NOMEM:
-        return "Cannot allocate memory for more pages";
-    case T30_ERR_NOPOLL:
-        return "Poll not accepted";
-    case T30_ERR_RETRYDCN:
-        return "Disconnected after permitted retries";
-    case T30_ERR_CALLDROPPED:
-        return "The call dropped prematurely";
+        free(s->tx_info.nsf);
+        s->tx_info.nsf = NULL;
     }
-    return "???";
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_non_ecm_put_bit(void *user_data, int bit)
-{
-    t30_state_t *s;
-    int was_trained;
-
-    s = (t30_state_t *) user_data;
-    if (bit < 0)
+    s->tx_info.nsf_len = 0;
+    if (s->tx_info.nsc)
     {
-        /* Special conditions */
-        switch (bit)
-        {
-        case PUTBIT_TRAINING_FAILED:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Non-ECM carrier training failed in state %d\n", s->state);
-            s->rx_trained = FALSE;
-            /* Cancel the timer, since we have actually seen something, and wait until the carrier drops
-               before proceeding. */
-            // TODO: this is not a complete answer to handling failures to train
-            s->timer_t2_t4 = 0;
-            break;
-        case PUTBIT_TRAINING_SUCCEEDED:
-            /* The modem is now trained */
-            span_log(&s->logging, SPAN_LOG_FLOW, "Non-ECM carrier trained in state %d\n", s->state);
-            /* In case we are in trainability test mode... */
-            s->training_current_zeros = 0;
-            s->training_most_zeros = 0;
-            s->rx_signal_present = TRUE;
-            s->rx_trained = TRUE;
-            s->timer_t2_t4 = 0;
-            break;
-        case PUTBIT_CARRIER_UP:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Non-ECM carrier up in state %d\n", s->state);
-            break;
-        case PUTBIT_CARRIER_DOWN:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Non-ECM carrier down in state %d\n", s->state);
-            was_trained = s->rx_trained;
-            s->rx_signal_present = FALSE;
-            s->rx_trained = FALSE;
-            switch (s->state)
-            {
-            case T30_STATE_F_TCF:
-                /* Only respond if we managed to actually sync up with the source. We don't
-                   want to respond just because we saw a click. These often occur just
-                   before the real signal, with many modems. Presumably this is due to switching
-                   within the far end modem. We also want to avoid the possibility of responding
-                   to the tail end of any slow modem signal. If there was a genuine data signal
-                   which we failed to train on it should not matter. If things are that bad, we
-                   do not stand much chance of good quality communications. */
-                if (was_trained)
-                {
-                    /* Although T.30 says the training test should be 1.5s of all 0's, some FAX
-                       machines send a burst of all 1's before the all 0's. Tolerate this. */
-                    if (s->training_current_zeros > s->training_most_zeros)
-                        s->training_most_zeros = s->training_current_zeros;
-                    if (s->training_most_zeros < fallback_sequence[s->current_fallback].bit_rate)
-                    {
-                        span_log(&s->logging, SPAN_LOG_FLOW, "Trainability test failed - longest run of zeros was %d\n", s->training_most_zeros);
-                        set_phase(s, T30_PHASE_B_TX);
-                        set_state(s, T30_STATE_F_FTT);
-                        send_simple_frame(s, T30_FTT);
-                    }
-                    else
-                    {
-                        /* The training went OK */
-                        s->short_train = TRUE;
-                        s->in_message = TRUE;
-                        rx_start_page(s);
-                        set_phase(s, T30_PHASE_B_TX);
-                        set_state(s, T30_STATE_F_CFR);
-                        send_simple_frame(s, T30_CFR);
-                    }
-                }
-                break;
-            case T30_STATE_F_POST_DOC_NON_ECM:
-                /* Page ended cleanly */
-                if (s->current_status == T30_ERR_NOCARRIERRX)
-                    s->current_status = T30_ERR_OK;
-                break;
-            default:
-                /* We should be receiving a document right now, but it did not end cleanly. */
-                if (was_trained)
-                {
-                    span_log(&s->logging, SPAN_LOG_WARNING, "Page did not end cleanly\n");
-                    /* We trained OK, so we should have some kind of received page, even though
-                       it did not end cleanly. */
-                    set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
-                    set_phase(s, T30_PHASE_D_RX);
-                    s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-                    s->timer_is_t4 = FALSE;
-                    if (s->current_status == T30_ERR_NOCARRIERRX)
-                        s->current_status = T30_ERR_OK;
-                }
-                else
-                {
-                    span_log(&s->logging, SPAN_LOG_WARNING, "Non-ECM carrier not found\n");
-                    s->current_status = T30_ERR_NOCARRIERRX;
-                }
-                break;
-            }
-            if (s->next_phase != T30_PHASE_IDLE)
-            {
-                set_phase(s, s->next_phase);
-                s->next_phase = T30_PHASE_IDLE;
-            }
-            break;
-        default:
-            span_log(&s->logging, SPAN_LOG_WARNING, "Unexpected non-ECM special bit - %d!\n", bit);
-            break;
-        }
-        return;
+        free(s->tx_info.nsc);
+        s->tx_info.nsc = NULL;
     }
-    switch (s->state)
+    s->tx_info.nsc_len = 0;
+    if (s->tx_info.nss)
     {
-    case T30_STATE_F_TCF:
-        /* Trainability test */
-        if (bit)
-        {
-            if (s->training_current_zeros > s->training_most_zeros)
-                s->training_most_zeros = s->training_current_zeros;
-            s->training_current_zeros = 0;
-        }
-        else
-        {
-            s->training_current_zeros++;
-        }
-        break;
-    case T30_STATE_F_DOC_NON_ECM:
-        /* Document transfer */
-        if (t4_rx_put_bit(&(s->t4), bit))
-        {
-            /* That is the end of the document */
-            set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
-            queue_phase(s, T30_PHASE_D_RX);
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-            s->timer_is_t4 = FALSE;
-        }
-        break;
+        free(s->tx_info.nss);
+        s->tx_info.nss = NULL;
+    }
+    s->tx_info.nss_len = 0;
+    if (s->tx_info.tsa)
+    {
+        free(s->tx_info.tsa);
+        s->tx_info.tsa = NULL;
+    }
+    if (s->tx_info.ira)
+    {
+        free(s->tx_info.ira);
+        s->tx_info.ira = NULL;
+    }
+    if (s->tx_info.cia)
+    {
+        free(s->tx_info.cia);
+        s->tx_info.cia = NULL;
+    }
+    if (s->tx_info.isp)
+    {
+        free(s->tx_info.isp);
+        s->tx_info.isp = NULL;
+    }
+    if (s->tx_info.csa)
+    {
+        free(s->tx_info.csa);
+        s->tx_info.csa = NULL;
+    }
+
+    if (s->rx_info.nsf)
+    {
+        free(s->rx_info.nsf);
+        s->rx_info.nsf = NULL;
+    }
+    s->rx_info.nsf_len = 0;
+    if (s->rx_info.nsc)
+    {
+        free(s->rx_info.nsc);
+        s->rx_info.nsc = NULL;
+    }
+    s->rx_info.nsc_len = 0;
+    if (s->rx_info.nss)
+    {
+        free(s->rx_info.nss);
+        s->rx_info.nss = NULL;
+    }
+    s->rx_info.nss_len = 0;
+    if (s->rx_info.tsa)
+    {
+        free(s->rx_info.tsa);
+        s->rx_info.tsa = NULL;
+    }
+    if (s->rx_info.ira)
+    {
+        free(s->rx_info.ira);
+        s->rx_info.ira = NULL;
+    }
+    if (s->rx_info.cia)
+    {
+        free(s->rx_info.cia);
+        s->rx_info.cia = NULL;
+    }
+    if (s->rx_info.isp)
+    {
+        free(s->rx_info.isp);
+        s->rx_info.isp = NULL;
+    }
+    if (s->rx_info.csa)
+    {
+        free(s->rx_info.csa);
+        s->rx_info.csa = NULL;
     }
 }
 /*- End of function --------------------------------------------------------*/
 
-void t30_non_ecm_put_byte(void *user_data, int byte)
+static uint8_t check_next_tx_step(t30_state_t *s)
 {
-    t30_state_t *s;
-
-    s = (t30_state_t *) user_data;
-    switch (s->state)
-    {
-    case T30_STATE_F_TCF:
-        /* Trainability test */
-        /* This makes counting zeros fast, but approximate. That really doesn't matter */
-        if (byte)
-        {
-            if (s->training_current_zeros > s->training_most_zeros)
-                s->training_most_zeros = s->training_current_zeros;
-            s->training_current_zeros = 0;
-        }
-        else
-        {
-            s->training_current_zeros += 8;
-        }
-        break;
-    case T30_STATE_F_DOC_NON_ECM:
-        /* Document transfer */
-        if (t4_rx_put_byte(&(s->t4), byte))
-        {
-            /* That is the end of the document */
-            set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
-            queue_phase(s, T30_PHASE_D_RX);
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-            s->timer_is_t4 = FALSE;
-        }
-        break;
-    }
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_non_ecm_put_chunk(void *user_data, const uint8_t buf[], int len)
-{
-    t30_state_t *s;
-    int i;
-
-    s = (t30_state_t *) user_data;
-    switch (s->state)
-    {
-    case T30_STATE_F_TCF:
-        /* Trainability test */
-        /* This makes counting zeros fast, but approximate. That really doesn't matter */
-        for (i = 0;  i < len;  i++)
-        {
-            if (buf[i])
-            {
-                if (s->training_current_zeros > s->training_most_zeros)
-                    s->training_most_zeros = s->training_current_zeros;
-                s->training_current_zeros = 0;
-            }
-            else
-            {
-                s->training_current_zeros += 8;
-            }
-        }
-        break;
-    case T30_STATE_F_DOC_NON_ECM:
-        /* Document transfer */
-        if (t4_rx_put_chunk(&(s->t4), buf, len))
-        {
-            /* That is the end of the document */
-            set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
-            queue_phase(s, T30_PHASE_D_RX);
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-            s->timer_is_t4 = FALSE;
-        }
-        break;
-    }
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_non_ecm_get_bit(void *user_data)
-{
-    int bit;
-    t30_state_t *s;
-
-    s = (t30_state_t *) user_data;
-    switch (s->state)
-    {
-    case T30_STATE_D_TCF:
-        /* Trainability test. */
-        bit = 0;
-        if (s->training_test_bits-- < 0)
-        {
-            /* Finished sending training test. */
-            bit = PUTBIT_END_OF_DATA;
-        }
-        break;
-    case T30_STATE_I:
-        /* Transferring real data. */
-        bit = t4_tx_get_bit(&(s->t4));
-        break;
-    case T30_STATE_D_POST_TCF:
-    case T30_STATE_II_Q:
-        /* We should be padding out a block of samples if we are here */
-        bit = 0;
-        break;
-    default:
-        span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_bit in bad state %d\n", s->state);
-        bit = PUTBIT_END_OF_DATA;
-        break;
-    }
-    return bit;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_non_ecm_get_byte(void *user_data)
-{
-    int byte;
-    t30_state_t *s;
-
-    s = (t30_state_t *) user_data;
-    switch (s->state)
-    {
-    case T30_STATE_D_TCF:
-        /* Trainability test. */
-        byte = 0;
-        if ((s->training_test_bits -= 8) < 0)
-        {
-            /* Finished sending training test. */
-            byte = 0x100;
-        }
-        break;
-    case T30_STATE_I:
-        /* Transferring real data. */
-        byte = t4_tx_get_byte(&(s->t4));
-        break;
-    case T30_STATE_D_POST_TCF:
-    case T30_STATE_II_Q:
-        /* We should be padding out a block of samples if we are here */
-        byte = 0;
-        break;
-    default:
-        span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_byte in bad state %d\n", s->state);
-        byte = 0x100;
-        break;
-    }
-    return byte;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_non_ecm_get_chunk(void *user_data, uint8_t buf[], int max_len)
-{
-    int len;
-    t30_state_t *s;
-
-    s = (t30_state_t *) user_data;
-    switch (s->state)
-    {
-    case T30_STATE_D_TCF:
-        /* Trainability test. */
-        for (len = 0;  len < max_len;  len++)
-        {
-            buf[len] = 0;
-            if ((s->training_test_bits -= 8) < 0)
-                break;
-        }
-        break;
-    case T30_STATE_I:
-        /* Transferring real data. */
-        len = t4_tx_get_chunk(&(s->t4), buf, max_len);
-        break;
-    case T30_STATE_D_POST_TCF:
-    case T30_STATE_II_Q:
-        /* We should be padding out a block of samples if we are here */
-        len = 0;
-        break;
-    default:
-        span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_chunk in bad state %d\n", s->state);
-        len = 0;
-        break;
-    }
-    return len;
-}
-/*- End of function --------------------------------------------------------*/
-
-static int check_next_tx_step(t30_state_t *s)
-{
+    int res;
     int more;
 
-    if (t4_tx_more_pages(&(s->t4)) == 0)
+    res = t4_tx_next_page_has_different_format(&s->t4);
+    if (res == 0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "More pages to come with the same format\n");
         return (s->local_interrupt_pending)  ?  T30_PRI_MPS  :  T30_MPS;
+    }
+    if (res > 0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "More pages to come with a different format\n");
+        s->tx_start_page = t4_tx_get_current_page_in_file(&s->t4) + 1;
+        return (s->local_interrupt_pending)  ?  T30_PRI_EOM  :  T30_EOM;
+    }
     /* Call a user handler, if one is set, to check if another document is to be sent.
        If so, we send an EOM, rather than an EOP. Then we will renegotiate, and the new
        document will begin. */
@@ -790,7 +639,11 @@ static int check_next_tx_step(t30_state_t *s)
     else
         more = FALSE;
     if (more)
+    {
+        //if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_MULTIPLE_SELECTIVE_POLLING_CAPABLE))
+        //    return T30_EOS;
         return (s->local_interrupt_pending)  ?  T30_PRI_EOM  :  T30_EOM;
+    }
     return (s->local_interrupt_pending)  ?  T30_PRI_EOP  :  T30_EOP;
 }
 /*- End of function --------------------------------------------------------*/
@@ -801,6 +654,7 @@ static int get_partial_ecm_page(t30_state_t *s)
     int len;
 
     s->ppr_count = 0;
+    s->ecm_progress = 0;
     /* Fill our partial page buffer with a partial page. Use the negotiated preferred frame size
        as the basis for the size of the frames produced. */
     /* We fill the buffer with complete HDLC frames, ready to send out. */
@@ -811,13 +665,13 @@ static int get_partial_ecm_page(t30_state_t *s)
     for (i = 0;  i < 256;  i++)
     {
         s->ecm_len[i] = -1;
-        s->ecm_data[i][0] = 0xFF;
-        s->ecm_data[i][1] = 0x03;
+        s->ecm_data[i][0] = ADDRESS_FIELD;
+        s->ecm_data[i][1] = CONTROL_FIELD_NON_FINAL_FRAME;
         s->ecm_data[i][2] = T4_FCD;
         /* These frames contain a frame sequence number within the partial page (one octet) followed
            by some image data. */
         s->ecm_data[i][3] = (uint8_t) i;
-        if ((len = t4_tx_get_chunk(&(s->t4), &s->ecm_data[i][4], s->octets_per_ecm_frame)) < s->octets_per_ecm_frame)
+        if ((len = t4_tx_get_chunk(&s->t4, &s->ecm_data[i][4], s->octets_per_ecm_frame)) < s->octets_per_ecm_frame)
         {
             /* The image is not big enough to fill the entire buffer */
             /* We need to pad to a full frame, as most receivers expect that. */
@@ -831,12 +685,12 @@ static int get_partial_ecm_page(t30_state_t *s)
             s->ecm_at_page_end = TRUE;
             return i;
         }
-        s->ecm_len[i] = (int16_t) 4 + len;
+        s->ecm_len[i] = (int16_t) (4 + len);
     }
     /* We filled the entire buffer */
     s->ecm_frames = 256;
     span_log(&s->logging, SPAN_LOG_FLOW, "Partial page buffer full (%d per frame)\n", s->octets_per_ecm_frame);
-    s->ecm_at_page_end = ((t4_tx_check_bit(&(s->t4)) & 2) != 0);
+    s->ecm_at_page_end = ((t4_tx_check_bit(&s->t4) & 2) != 0);
     return 256;
 }
 /*- End of function --------------------------------------------------------*/
@@ -844,25 +698,29 @@ static int get_partial_ecm_page(t30_state_t *s)
 static int t30_ecm_commit_partial_page(t30_state_t *s)
 {
     int i;
+    int image_ended;
 
-    span_log(&s->logging, SPAN_LOG_FLOW, "Commiting partial page - %d frames\n", s->ecm_frames);
+    span_log(&s->logging, SPAN_LOG_FLOW, "Commiting partial page - block %d, %d frames\n", s->ecm_block, s->ecm_frames);
+    image_ended = FALSE;
     for (i = 0;  i < s->ecm_frames;  i++)
     {
-        if (t4_rx_put_chunk(&(s->t4), s->ecm_data[i], s->ecm_len[i]))
+        if (t4_rx_put_chunk(&s->t4, s->ecm_data[i], s->ecm_len[i]))
         {
             /* This is the end of the document */
             /* Clear the buffer */
             for (i = 0;  i < 256;  i++)
                 s->ecm_len[i] = -1;
             s->ecm_frames = -1;
-            return -1;
+            image_ended = TRUE;
+            break;
         }
     }
     /* Clear the buffer */
     for (i = 0;  i < 256;  i++)
         s->ecm_len[i] = -1;
+    s->ecm_block++;
     s->ecm_frames = -1;
-    return 0;
+    return (image_ended)  ?  -1  :  0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -871,33 +729,33 @@ static int send_next_ecm_frame(t30_state_t *s)
     int i;
     uint8_t frame[3];
 
-    if (s->ecm_current_frame < s->ecm_frames)
+    if (s->ecm_current_tx_frame < s->ecm_frames)
     {
         /* Search for the next frame, within the current partial page, which has
            not been tagged as transferred OK. */
-        for (i = s->ecm_current_frame;  i < s->ecm_frames;  i++)
+        for (i = s->ecm_current_tx_frame;  i < s->ecm_frames;  i++)
         {
             if (s->ecm_len[i] >= 0)
             {
                 send_frame(s, s->ecm_data[i], s->ecm_len[i]);
-                s->ecm_current_frame = i + 1;
-                s->ecm_frames_this_burst++;
+                s->ecm_current_tx_frame = i + 1;
+                s->ecm_frames_this_tx_burst++;
                 return 0;
             }
         }
-        s->ecm_current_frame = s->ecm_frames;
+        s->ecm_current_tx_frame = s->ecm_frames;
     }
-    if (s->ecm_current_frame <= s->ecm_frames + 3)
+    if (s->ecm_current_tx_frame <= s->ecm_frames + 3)
     {
         /* We have sent all the FCD frames. Send some RCP frames. Three seems to be
            a popular number, to minimise the risk of a bit error stopping the receiving
            end from recognising the RCP. */
-        s->ecm_current_frame++;
+        s->ecm_current_tx_frame++;
         /* The RCP frame is an odd man out, as its a simple 1 byte control
            frame, but is specified to not have the final bit set. It doesn't
            seem to have the DIS received bit set, either. */
-        frame[0] = 0xFF;
-        frame[1] = 0x03;
+        frame[0] = ADDRESS_FIELD;
+        frame[1] = CONTROL_FIELD_NON_FINAL_FRAME;
         frame[2] = T4_RCP;
         send_frame(s, frame, 3);
         /* In case we are just after a CTC/CTR exchange, which kicked us back to long training */
@@ -908,32 +766,43 @@ static int send_next_ecm_frame(t30_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
+static void send_rr(t30_state_t *s)
+{
+    if (s->current_status != T30_ERR_TX_T5EXP)
+        send_simple_frame(s, T30_RR);
+    else
+        send_dcn(s);
+}
+/*- End of function --------------------------------------------------------*/
+
 static int send_first_ecm_frame(t30_state_t *s)
 {
-    s->ecm_current_frame = 0;
-    s->ecm_frames_this_burst = 0;
+    s->ecm_current_tx_frame = 0;
+    s->ecm_frames_this_tx_burst = 0;
     return send_next_ecm_frame(s);
 }
 /*- End of function --------------------------------------------------------*/
 
-static void print_frame(t30_state_t *s, const char *io, const uint8_t *fr, int frlen)
+static void print_frame(t30_state_t *s, const char *io, const uint8_t *msg, int len)
 {
     span_log(&s->logging,
              SPAN_LOG_FLOW,
              "%s %s with%s final frame tag\n",
              io,
-             t30_frametype(fr[2]),
-             (fr[1] & 0x10)  ?  ""  :  "out");
-    span_log_buf(&s->logging, SPAN_LOG_FLOW, io, fr, frlen);
+             t30_frametype(msg[2]),
+             (msg[1] & 0x10)  ?  ""  :  "out");
+    span_log_buf(&s->logging, SPAN_LOG_FLOW, io, msg, len);
 }
 /*- End of function --------------------------------------------------------*/
 
-static void send_frame(t30_state_t *s, const uint8_t *fr, int frlen)
+static void send_frame(t30_state_t *s, const uint8_t *msg, int len)
 {
-    print_frame(s, "Tx: ", fr, frlen);
+    print_frame(s, "Tx: ", msg, len);
 
+    if (s->real_time_frame_handler)
+        s->real_time_frame_handler(s, s->real_time_frame_user_data, FALSE, msg, len);
     if (s->send_hdlc_handler)
-        s->send_hdlc_handler(s->send_hdlc_user_data, fr, frlen);
+        s->send_hdlc_handler(s->send_hdlc_user_data, msg, len);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -942,8 +811,8 @@ static void send_simple_frame(t30_state_t *s, int type)
     uint8_t frame[3];
 
     /* The simple command/response frames are always final frames */
-    frame[0] = 0xFF;
-    frame[1] = 0x13;
+    frame[0] = ADDRESS_FIELD;
+    frame[1] = CONTROL_FIELD_FINAL_FRAME;
     frame[2] = (uint8_t) (type | s->dis_received);
     send_frame(s, frame, 3);
 }
@@ -957,8 +826,8 @@ static void send_20digit_msg_frame(t30_state_t *s, int cmd, char *msg)
 
     len = strlen(msg);
     p = 0;
-    frame[p++] = 0xFF;
-    frame[p++] = 0x03;
+    frame[p++] = ADDRESS_FIELD;
+    frame[p++] = CONTROL_FIELD_NON_FINAL_FRAME;
     frame[p++] = (uint8_t) (cmd | s->dis_received);
     while (len > 0)
         frame[p++] = msg[--len];
@@ -968,29 +837,121 @@ static void send_20digit_msg_frame(t30_state_t *s, int cmd, char *msg)
 }
 /*- End of function --------------------------------------------------------*/
 
-static int send_ident_frame(t30_state_t *s, uint8_t cmd)
+static int send_nsf_frame(t30_state_t *s)
 {
-    /* Only send if there is an ident to send. */
-    if (s->local_ident[0])
+    /* Only send if there is an NSF message to send. */
+    if (s->tx_info.nsf  &&  s->tx_info.nsf_len)
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Sending ident '%s'\n", s->local_ident);
-        /* 'cmd' should be T30_TSI, T30_CIG or T30_CSI */
-        send_20digit_msg_frame(s, cmd, s->local_ident);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending user supplied NSF - %d octets\n", s->tx_info.nsf_len);
+        s->tx_info.nsf[0] = ADDRESS_FIELD;
+        s->tx_info.nsf[1] = CONTROL_FIELD_NON_FINAL_FRAME;
+        s->tx_info.nsf[2] = (uint8_t) (T30_NSF | s->dis_received);
+        send_frame(s, s->tx_info.nsf, s->tx_info.nsf_len + 3);
         return TRUE;
     }
     return FALSE;
 }
 /*- End of function --------------------------------------------------------*/
 
-static int send_pw_frame(t30_state_t *s)
+static int send_nss_frame(t30_state_t *s)
 {
-    /* Only send if there is a password to send. */
-    if (s->local_password[0])
+    /* Only send if there is an NSF message to send. */
+    if (s->tx_info.nss  &&  s->tx_info.nss_len)
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Sending password '%s'\n", s->local_password);
-        send_20digit_msg_frame(s, T30_PWD, s->local_password);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending user supplied NSS - %d octets\n", s->tx_info.nss_len);
+        s->tx_info.nss[0] = ADDRESS_FIELD;
+        s->tx_info.nss[1] = CONTROL_FIELD_NON_FINAL_FRAME;
+        s->tx_info.nss[2] = (uint8_t) (T30_NSS | s->dis_received);
+        send_frame(s, s->tx_info.nss, s->tx_info.nss_len + 3);
         return TRUE;
     }
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_nsc_frame(t30_state_t *s)
+{
+    /* Only send if there is an NSF message to send. */
+    if (s->tx_info.nsc  &&  s->tx_info.nsc_len)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending user supplied NSC - %d octets\n", s->tx_info.nsc_len);
+        s->tx_info.nsc[0] = ADDRESS_FIELD;
+        s->tx_info.nsc[1] = CONTROL_FIELD_NON_FINAL_FRAME;
+        s->tx_info.nsc[2] = (uint8_t) (T30_NSC | s->dis_received);
+        send_frame(s, s->tx_info.nsc, s->tx_info.nsc_len + 3);
+        return TRUE;
+    }
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_ident_frame(t30_state_t *s, uint8_t cmd)
+{
+    if (s->tx_info.ident[0])
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending ident '%s'\n", s->tx_info.ident);
+        /* 'cmd' should be T30_TSI, T30_CIG or T30_CSI */
+        send_20digit_msg_frame(s, cmd, s->tx_info.ident);
+        return TRUE;
+    }
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_psa_frame(t30_state_t *s)
+{
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_POLLED_SUBADDRESSING_CAPABLE)  &&  s->tx_info.polled_sub_address[0])
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending polled sub-address '%s'\n", s->tx_info.polled_sub_address);
+        send_20digit_msg_frame(s, T30_PSA, s->tx_info.polled_sub_address);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_POLLED_SUBADDRESSING_CAPABLE);
+        return TRUE;
+    }
+    clr_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_POLLED_SUBADDRESSING_CAPABLE);
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_sep_frame(t30_state_t *s)
+{
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_SELECTIVE_POLLING_CAPABLE)  &&  s->tx_info.selective_polling_address[0])
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending selective polling address '%s'\n", s->tx_info.selective_polling_address);
+        send_20digit_msg_frame(s, T30_SEP, s->tx_info.selective_polling_address);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_SELECTIVE_POLLING_CAPABLE);
+        return TRUE;
+    }
+    clr_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_SELECTIVE_POLLING_CAPABLE);
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_sid_frame(t30_state_t *s)
+{
+    /* Only send if there is an ID to send. */
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_PASSWORD)  &&  s->tx_info.sender_ident[0])
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending sender identification '%s'\n", s->tx_info.sender_ident);
+        send_20digit_msg_frame(s, T30_SID, s->tx_info.sender_ident);
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_SENDER_ID_TRANSMISSION);
+        return TRUE;
+    }
+    clr_ctrl_bit(s->dcs_frame, T30_DCS_BIT_SENDER_ID_TRANSMISSION);
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_pwd_frame(t30_state_t *s)
+{
+    /* Only send if there is a password to send. */
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_PASSWORD)  &&  s->tx_info.password[0])
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending password '%s'\n", s->tx_info.password);
+        send_20digit_msg_frame(s, T30_PWD, s->tx_info.password);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_PASSWORD);
+        return TRUE;
+    }
+    clr_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_PASSWORD);
     return FALSE;
 }
 /*- End of function --------------------------------------------------------*/
@@ -998,49 +959,92 @@ static int send_pw_frame(t30_state_t *s)
 static int send_sub_frame(t30_state_t *s)
 {
     /* Only send if there is a sub-address to send. */
-    if (s->local_sub_address[0])
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_SUBADDRESSING_CAPABLE)  &&  s->tx_info.sub_address[0])
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Sending sub address '%s'\n", s->local_sub_address);
-        send_20digit_msg_frame(s, T30_SUB, s->local_sub_address);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending sub-address '%s'\n", s->tx_info.sub_address);
+        send_20digit_msg_frame(s, T30_SUB, s->tx_info.sub_address);
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_SUBADDRESS_TRANSMISSION);
         return TRUE;
     }
+    clr_ctrl_bit(s->dcs_frame, T30_DCS_BIT_SUBADDRESS_TRANSMISSION);
     return FALSE;
 }
 /*- End of function --------------------------------------------------------*/
 
-static int send_nsf_frame(t30_state_t *s)
+static int send_tsa_frame(t30_state_t *s)
 {
-    int p;
-    uint8_t frame[T30_MAX_LOCAL_NSF_LEN + 3];
-
-    /* Only send if there is an NSF message to send. */
-    if (s->local_nsf_len)
+    if ((test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T37)  ||  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T38))  &&  0)
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Sending user supplied NSF - %d octets\n", s->local_nsf_len);
-        p = 0;
-        frame[p++] = 0xFF;
-        frame[p++] = 0x03;
-        frame[p++] = (uint8_t) (T30_NSF | s->dis_received);
-        for (  ;  p < s->local_nsf_len + 3;  p++)
-            frame[p] = s->local_nsf[p - 3];
-        send_frame(s, frame, s->local_nsf_len + 3);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending transmitting subscriber internet address '%s'\n", "");
         return TRUE;
     }
     return FALSE;
 }
 /*- End of function --------------------------------------------------------*/
+
+static int send_ira_frame(t30_state_t *s)
+{
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_INTERNET_ROUTING_ADDRESS)  &&  0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending internet routing address '%s'\n", "");
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_INTERNET_ROUTING_ADDRESS_TRANSMISSION);
+        return TRUE;
+    }
+    clr_ctrl_bit(s->dcs_frame, T30_DCS_BIT_INTERNET_ROUTING_ADDRESS_TRANSMISSION);
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_cia_frame(t30_state_t *s)
+{
+    if ((test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T37)  ||  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T38))  &&  0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending calling subscriber internet address '%s'\n", "");
+        return TRUE;
+    }
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_isp_frame(t30_state_t *s)
+{
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_INTERNET_SELECTIVE_POLLING_ADDRESS)  &&  0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending internet selective polling address '%s'\n", "");
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_INTERNET_SELECTIVE_POLLING_ADDRESS);
+        return TRUE;
+    }
+    clr_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_INTERNET_SELECTIVE_POLLING_ADDRESS);
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+
+#if 0
+static int send_csa_frame(t30_state_t *s)
+{
+#if 0
+    if (("in T.37 mode"  ||  "in T.38 mode")  &&  0)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Sending called subscriber internet address '%s'\n", "");
+        return TRUE;
+    }
+#endif
+    return FALSE;
+}
+/*- End of function --------------------------------------------------------*/
+#endif
 
 static int send_pps_frame(t30_state_t *s)
 {
     uint8_t frame[7];
     
-    frame[0] = 0xFF;
-    frame[1] = 0x13;
+    frame[0] = ADDRESS_FIELD;
+    frame[1] = CONTROL_FIELD_FINAL_FRAME;
     frame[2] = (uint8_t) (T30_PPS | s->dis_received);
     frame[3] = (s->ecm_at_page_end)  ?  ((uint8_t) (s->next_tx_step | s->dis_received))  :  T30_NULL;
-    frame[4] = (uint8_t) (s->ecm_page & 0xFF);
+    frame[4] = (uint8_t) (s->tx_page_number & 0xFF);
     frame[5] = (uint8_t) (s->ecm_block & 0xFF);
-    frame[6] = (uint8_t) ((s->ecm_frames_this_burst == 0)  ?  0  :  (s->ecm_frames_this_burst - 1));
+    frame[6] = (uint8_t) ((s->ecm_frames_this_tx_burst == 0)  ?  0  :  (s->ecm_frames_this_tx_burst - 1));
     span_log(&s->logging, SPAN_LOG_FLOW, "Sending PPS + %s\n", t30_frametype(frame[3]));
     send_frame(s, frame, 7);
     return frame[3] & 0xFE;
@@ -1051,23 +1055,22 @@ static int set_dis_or_dtc(t30_state_t *s)
 {
     /* Whether we use a DIS or a DTC is determined by whether we have received a DIS.
        We just need to edit the prebuilt message. */
-    s->dis_dtc_frame[2] = (uint8_t) (T30_DIS | s->dis_received);
+    s->local_dis_dtc_frame[2] = (uint8_t) (T30_DIS | s->dis_received);
     /* If we have a file name to receive into, then we are receive capable */
     if (s->rx_file[0])
-        set_dis_dtc_bit(s, 10);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_READY_TO_RECEIVE_FAX_DOCUMENT);
     else
-        clr_dis_dtc_bit(s, 10);
+        clr_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_READY_TO_RECEIVE_FAX_DOCUMENT);
     /* If we have a file name to transmit, then we are ready to transmit (polling) */
     if (s->tx_file[0])
-        set_dis_dtc_bit(s, 9);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_READY_TO_TRANSMIT_FAX_DOCUMENT);
     else
-        clr_dis_dtc_bit(s, 9);
-    //t30_decode_dis_dtc_dcs(s, s->dis_dtc_frame, s->dis_dtc_len);
+        clr_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_READY_TO_TRANSMIT_FAX_DOCUMENT);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-static int build_dis_or_dtc(t30_state_t *s)
+int t30_build_dis_or_dtc(t30_state_t *s)
 {
     int i;
 
@@ -1076,18 +1079,18 @@ static int build_dis_or_dtc(t30_state_t *s)
        it is sent. It might also be edited if the application changes our
        capabilities (e.g. disabling fine mode). Right now we set up all the
        unchanging stuff about what we are capable of doing. */
-    s->dis_dtc_frame[0] = 0xFF;
-    s->dis_dtc_frame[1] = 0x13;
-    s->dis_dtc_frame[2] = (uint8_t) (T30_DIS | s->dis_received);
+    s->local_dis_dtc_frame[0] = ADDRESS_FIELD;
+    s->local_dis_dtc_frame[1] = CONTROL_FIELD_FINAL_FRAME;
+    s->local_dis_dtc_frame[2] = (uint8_t) (T30_DIS | s->dis_received);
     for (i = 3;  i < 19;  i++)
-        s->dis_dtc_frame[i] = 0x00;
+        s->local_dis_dtc_frame[i] = 0x00;
 
     /* Always say 256 octets per ECM frame preferred, as 64 is never used in the
        real world. */
     if ((s->iaf & T30_IAF_MODE_T37))
-        set_dis_dtc_bit(s, 1);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T37);
     if ((s->iaf & T30_IAF_MODE_T38))
-        set_dis_dtc_bit(s, 3);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T38);
     /* No 3G mobile  */
     /* No V.8 */
     /* 256 octets preferred - don't bother making this optional, as everything uses 256 */
@@ -1095,101 +1098,147 @@ static int build_dis_or_dtc(t30_state_t *s)
     /* Ready to receive a fax will be determined separately, and this message edited. */
     /* With no modems set we are actually selecting V.27ter fallback at 2400bps */
     if ((s->supported_modems & T30_SUPPORT_V27TER))
-        set_dis_dtc_bit(s, 12);
+        set_ctrl_bit(s->local_dis_dtc_frame, 12);
     if ((s->supported_modems & T30_SUPPORT_V29))
-        set_dis_dtc_bit(s, 11);
+        set_ctrl_bit(s->local_dis_dtc_frame, 11);
     /* V.17 is only valid when combined with V.29 and V.27ter, so if we enable V.17 we force the others too. */
     if ((s->supported_modems & T30_SUPPORT_V17))
-        s->dis_dtc_frame[4] |= (DISBIT6 | DISBIT4 | DISBIT3);
+        s->local_dis_dtc_frame[4] |= (DISBIT6 | DISBIT4 | DISBIT3);
     if ((s->supported_resolutions & T30_SUPPORT_FINE_RESOLUTION))
-        set_dis_dtc_bit(s, 15);
+        set_ctrl_bit(s->local_dis_dtc_frame, 15);
     if ((s->supported_compressions & T30_SUPPORT_T4_2D_COMPRESSION))
-        set_dis_dtc_bit(s, 16);
+        set_ctrl_bit(s->local_dis_dtc_frame, 16);
     /* 215mm wide is always supported */
     if ((s->supported_image_sizes & T30_SUPPORT_303MM_WIDTH))
-        set_dis_dtc_bit(s, 18);
+        set_ctrl_bit(s->local_dis_dtc_frame, 18);
     else if ((s->supported_image_sizes & T30_SUPPORT_255MM_WIDTH))
-        set_dis_dtc_bit(s, 17);
+        set_ctrl_bit(s->local_dis_dtc_frame, 17);
     /* A4 is always supported. */
     if ((s->supported_image_sizes & T30_SUPPORT_UNLIMITED_LENGTH))
-        set_dis_dtc_bit(s, 20);
+        set_ctrl_bit(s->local_dis_dtc_frame, 20);
     else if ((s->supported_image_sizes & T30_SUPPORT_B4_LENGTH))
-        set_dis_dtc_bit(s, 19);
-    /* No scan-line padding required. */
-    set_dis_dtc_bits(s, 7, 21);
+        set_ctrl_bit(s->local_dis_dtc_frame, 19);
+    /* No scan-line padding required, but some may be specified by the application. */
+    set_ctrl_bits(s->local_dis_dtc_frame, s->local_min_scan_time_code, 21);
     if ((s->supported_compressions & T30_SUPPORT_NO_COMPRESSION))
-        set_dis_dtc_bit(s, 26);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_UNCOMPRESSED_CAPABLE);
     if (s->ecm_allowed)
     {
         /* ECM allowed */
-        set_dis_dtc_bit(s, 27);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_ECM_CAPABLE);
         /* Only offer the option of fancy compression schemes, if we are
            also offering the ECM option needed to support them. */
         if ((s->supported_compressions & T30_SUPPORT_T6_COMPRESSION))
-            set_dis_dtc_bit(s, 31);
+            set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T6_CAPABLE);
         if ((s->supported_compressions & T30_SUPPORT_T43_COMPRESSION))
-            set_dis_dtc_bit(s, 36);
-        if ((s->supported_compressions & T30_SUPPORT_T85_COMPRESSION))
-            set_dis_dtc_bit(s, 78);
-        /* No T.85 optional. */
+            set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T43_CAPABLE);
+#if 0
         if ((s->supported_compressions & T30_SUPPORT_T45_COMPRESSION))
-            set_dis_dtc_bit(s, 116);
+            set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T45_CAPABLE);
+        if ((s->supported_compressions & T30_SUPPORT_T81_COMPRESSION))
+            set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T81_CAPABLE);
+        if ((s->supported_compressions & T30_SUPPORT_SYCC_T81_COMPRESSION))
+            set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_SYCC_T81_CAPABLE);
+        if ((s->supported_compressions & T30_SUPPORT_T85_COMPRESSION))
+            set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T85_CAPABLE);
+        /* No T.85 optional L0. */
+        //if ((s->supported_compressions & T30_SUPPORT_T85_L0_COMPRESSION))
+        //    set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T85_L0_CAPABLE);
+        //if ((s->supported_compressions & T30_SUPPORT_T89_COMPRESSION))
+        //    set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T89_CAPABLE);
+#endif
     }
-    if (s->support_fnv)
-        set_dis_dtc_bit(s, 33);
-    if ((s->supported_polling_features & T30_SUPPORT_SEP))
-        set_dis_dtc_bit(s, 34);
-    if ((s->supported_polling_features & T30_SUPPORT_PSA))
-        set_dis_dtc_bit(s, 35);
+    if ((s->supported_t30_features & T30_SUPPORT_FIELD_NOT_VALID))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_FNV_CAPABLE);
+    if ((s->supported_t30_features & T30_SUPPORT_MULTIPLE_SELECTIVE_POLLING))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_MULTIPLE_SELECTIVE_POLLING_CAPABLE);
+    if ((s->supported_t30_features & T30_SUPPORT_POLLED_SUB_ADDRESSING))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_POLLED_SUBADDRESSING_CAPABLE);
     /* No plane interleave */
     /* No G.726 */
     /* No extended voice coding */
     if ((s->supported_resolutions & T30_SUPPORT_SUPERFINE_RESOLUTION))
-        set_dis_dtc_bit(s, 41);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_200_400_CAPABLE);
     if ((s->supported_resolutions & T30_SUPPORT_300_300_RESOLUTION))
-        set_dis_dtc_bit(s, 42);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_300_300_CAPABLE);
     if ((s->supported_resolutions & (T30_SUPPORT_400_400_RESOLUTION | T30_SUPPORT_R16_RESOLUTION)))
-        set_dis_dtc_bit(s, 43);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_400_400_CAPABLE);
     /* Metric */ 
-    set_dis_dtc_bit(s, 45);
+    set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_METRIC_RESOLUTION_PREFERRED);
     /* Superfine minimum scan line time pattern follows fine */
-    /* No selective polling */
-    /* No sub-addressing */
-    /* No password */
-    /* No data file (polling) */
-    /* No BFT */
-    /* No DTM */
-    /* No EDI */
-    /* No BTM */
+    if ((s->supported_t30_features & T30_SUPPORT_SELECTIVE_POLLING))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_SELECTIVE_POLLING_CAPABLE);
+    if ((s->supported_t30_features & T30_SUPPORT_SUB_ADDRESSING))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_SUBADDRESSING_CAPABLE);
+    if ((s->supported_t30_features & T30_SUPPORT_IDENTIFICATION))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_PASSWORD);
+    /* Ready to transmit a data file (polling) */
+    if (s->tx_file[0])
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_READY_TO_TRANSMIT_DATA_FILE);
+    /* No Binary file transfer (BFT) */
+    /* No Document transfer mode (DTM) */
+    /* No Electronic data interchange (EDI) */
+    /* No Basic transfer mode (BTM) */
     /* No mixed mode (polling) */
     /* No character mode */
-    /* No mixed mode */
-    /* No mode 26 */
-    /* No digital network capable */
+    /* No mixed mode (T.4/Annex E) */
+    /* No mode 26 (T.505) */
+    /* No digital network capability */
+    /* No duplex operation */
     /* No JPEG */
     /* No full colour */
     /* No 12bits/pel */
-    /* No sub-sampling */
+    /* No sub-sampling (1:1:1) */
+    /* No custom illuminant */
+    /* No custom gamut range */
     if ((s->supported_image_sizes & T30_SUPPORT_US_LETTER_LENGTH))
-        set_dis_dtc_bit(s, 76);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_NORTH_AMERICAN_LETTER_CAPABLE);
     if ((s->supported_image_sizes & T30_SUPPORT_US_LEGAL_LENGTH))
-        set_dis_dtc_bit(s, 77);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_NORTH_AMERICAN_LEGAL_CAPABLE);
+    /* No HKM key management */
+    /* No RSA key management */
+    /* No override */
+    /* No HFX40 cipher */
+    /* No alternative cipher number 2 */
+    /* No alternative cipher number 3 */
+    /* No HFX40-I hashing */
+    /* No alternative hashing system number 2 */
+    /* No alternative hashing system number 3 */
+    /* No T.44 (mixed raster content) */
+    /* No page length maximum strip size for T.44 (mixed raster content) */
+    /* No colour/grey scale 300x300 or 400x400 */
+    /* No colour/grey scale 100x100 */
+    /* No simple phase C BFT negotiations */
+    /* No extended BFT negotiations */
+    if ((s->supported_t30_features & T30_SUPPORT_INTERNET_SELECTIVE_POLLING_ADDRESS))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_INTERNET_SELECTIVE_POLLING_ADDRESS);
+    if ((s->supported_t30_features & T30_SUPPORT_INTERNET_ROUTING_ADDRESS))
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_INTERNET_ROUTING_ADDRESS);
     if ((s->supported_resolutions & T30_SUPPORT_600_600_RESOLUTION))
-        set_dis_dtc_bit(s, 105);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_600_600_CAPABLE);
     if ((s->supported_resolutions & T30_SUPPORT_1200_1200_RESOLUTION))
-        set_dis_dtc_bit(s, 106);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_1200_1200_CAPABLE);
     if ((s->supported_resolutions & T30_SUPPORT_300_600_RESOLUTION))
-        set_dis_dtc_bit(s, 107);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_300_600_CAPABLE);
     if ((s->supported_resolutions & T30_SUPPORT_400_800_RESOLUTION))
-        set_dis_dtc_bit(s, 108);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_400_800_CAPABLE);
     if ((s->supported_resolutions & T30_SUPPORT_600_1200_RESOLUTION))
-        set_dis_dtc_bit(s, 109);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_600_1200_CAPABLE);
+    /* No colour/grey scale 600x600 */
+    /* No colour/grey scale 1200x1200 */
+    /* No double sided printing (alternate mode) */
+    /* No double sided printing (continuous mode) */
+    /* No black and white mixed raster content profile */
+    /* No shared data memory */
+    /* No T.44 colour space */
     if ((s->iaf & T30_IAF_MODE_FLOW_CONTROL))
-        set_dis_dtc_bit(s, 121);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T38_FLOW_CONTROL_CAPABLE);
+    /* No k > 4 */
     if ((s->iaf & T30_IAF_MODE_CONTINUOUS_FLOW))
-        set_dis_dtc_bit(s, 123);
-    s->dis_dtc_len = 19;
-    //t30_decode_dis_dtc_dcs(s, s->dis_dtc_frame, s->dis_dtc_len);
+        set_ctrl_bit(s->local_dis_dtc_frame, T30_DIS_BIT_T38_FAX_CAPABLE);
+    /* No T.89 profile */
+    s->local_dis_dtc_len = 19;
+    //t30_decode_dis_dtc_dcs(s, s->local_dis_dtc_frame, s->local_dis_dtc_len);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
@@ -1199,79 +1248,76 @@ static int prune_dis_dtc(t30_state_t *s)
     int i;
 
     /* Find the last octet that is really needed, set the extension bits, and trim the message length */
-    for (i = 18;  i > 4;  i--)
+    for (i = 18;  i >= 6;  i--)
     {
         /* Strip the top bit */
-        s->dis_dtc_frame[i] &= (DISBIT1 | DISBIT2 | DISBIT3 | DISBIT4 | DISBIT5 | DISBIT6 | DISBIT7);
+        s->local_dis_dtc_frame[i] &= (DISBIT1 | DISBIT2 | DISBIT3 | DISBIT4 | DISBIT5 | DISBIT6 | DISBIT7);
         /* Check if there is some real message content here */
-        if (s->dis_dtc_frame[i])
+        if (s->local_dis_dtc_frame[i])
             break;
     }
-    s->dis_dtc_len = i + 1;
+    s->local_dis_dtc_len = i + 1;
     /* Fill in any required extension bits */
+    s->local_dis_dtc_frame[i] &= ~DISBIT8;
     for (i--;  i > 4;  i--)
-        s->dis_dtc_frame[i] |= DISBIT8;
-    t30_decode_dis_dtc_dcs(s, s->dis_dtc_frame, s->dis_dtc_len);
-    return s->dis_dtc_len;
+        s->local_dis_dtc_frame[i] |= DISBIT8;
+    t30_decode_dis_dtc_dcs(s, s->local_dis_dtc_frame, s->local_dis_dtc_len);
+    return s->local_dis_dtc_len;
 }
 /*- End of function --------------------------------------------------------*/
 
-static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
+static int build_dcs(t30_state_t *s)
 {
-    uint8_t dis_dtc_frame[T30_MAX_DIS_DTC_DCS_LEN];
     int i;
     int bad;
     
-    if (len < 6)
-    {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Short DIS/DTC frame\n");
-        s->current_status = T30_ERR_INCOMPATIBLE;
-        return -1;
-    }
-
-    /* Make a local copy of the message, padded to the maximum possible length with zeros. This allows
-       us to simply pick out the bits, without worrying about whether they were set from the remote side. */
-    if (len > T30_MAX_DIS_DTC_DCS_LEN)
-    {
-        memcpy(dis_dtc_frame, msg, T30_MAX_DIS_DTC_DCS_LEN);
-    }
-    else
-    {
-        memcpy(dis_dtc_frame, msg, len);
-        if (len < T30_MAX_DIS_DTC_DCS_LEN)
-            memset(dis_dtc_frame + len, 0, T30_MAX_DIS_DTC_DCS_LEN - len);
-    }
-    
-    /* Make a DCS frame based on local issues and a received DIS frame. Negotiate the result
-       based on what both parties can do. */
-    s->dcs_frame[0] = 0xFF;
-    s->dcs_frame[1] = 0x13;
+    /* Make a DCS frame based on local issues and the latest received DIS/DTC frame. Negotiate
+       the result based on what both parties can do. */
+    s->dcs_frame[0] = ADDRESS_FIELD;
+    s->dcs_frame[1] = CONTROL_FIELD_FINAL_FRAME;
     s->dcs_frame[2] = (uint8_t) (T30_DCS | s->dis_received);
     for (i = 3;  i < 19;  i++)
         s->dcs_frame[i] = 0x00;
+
+#if 0
+    /* Check for T.37 simple mode. */
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T37))
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T37);
+    /* Check for T.38 mode. */
+    if (test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T38))
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T38);
+#endif
+
     /* Set to required modem rate */
     s->dcs_frame[4] |= fallback_sequence[s->current_fallback].dcs_code;
 
     /* Select the compression to use. */
     switch (s->line_encoding)
     {
+#if 0
+    case T4_COMPRESSION_ITU_T85:
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T85_MODE);
+        //set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T85_L0_MODE);
+        set_ctrl_bits(s->dcs_frame, T30_MIN_SCAN_0MS, 21);
+        break;
+#endif
     case T4_COMPRESSION_ITU_T6:
-        set_dcs_bit(s, 31);
-        set_dcs_bits(s, T30_MIN_SCAN_0MS, 21);
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T6_MODE);
+        set_ctrl_bits(s->dcs_frame, T30_MIN_SCAN_0MS, 21);
         break;
     case T4_COMPRESSION_ITU_T4_2D:
-        set_dcs_bit(s, 16);
-        set_dcs_bits(s, s->min_scan_time_code & 0x7, 21);
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_2D_CODING);
+        set_ctrl_bits(s->dcs_frame, s->min_scan_time_code, 21);
         break;
     case T4_COMPRESSION_ITU_T4_1D:
-        set_dcs_bits(s, s->min_scan_time_code & 0x7, 21);
+        set_ctrl_bits(s->dcs_frame, s->min_scan_time_code, 21);
         break;
     default:
-        set_dcs_bits(s, T30_MIN_SCAN_0MS, 21);
+        set_ctrl_bits(s->dcs_frame, T30_MIN_SCAN_0MS, 21);
         break;
     }
     /* We have a file to send, so tell the far end to go into receive mode. */
-    set_dcs_bit(s, 10);
+    set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_RECEIVE_FAX_DOCUMENT);
     /* Set the Y resolution bits */
     bad = T30_ERR_OK;
     switch (s->y_resolution)
@@ -1283,13 +1329,13 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
             if (!(s->supported_resolutions & T30_SUPPORT_600_1200_RESOLUTION))
                 bad = T30_ERR_NORESSUPPORT;
             else
-                set_dcs_bit(s, 109);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_600_1200);
             break;
         case T4_X_RESOLUTION_1200:
             if (!(s->supported_resolutions & T30_SUPPORT_1200_1200_RESOLUTION))
                 bad = T30_ERR_NORESSUPPORT;
             else
-                set_dcs_bit(s, 106);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_1200_1200);
             break;
         default:
             bad = T30_ERR_NORESSUPPORT;
@@ -1303,7 +1349,7 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
             if (!(s->supported_resolutions & T30_SUPPORT_400_800_RESOLUTION))
                 bad = T30_ERR_NORESSUPPORT;
             else
-                set_dcs_bit(s, 108);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_400_800);
             break;
         default:
             bad = T30_ERR_NORESSUPPORT;
@@ -1317,13 +1363,13 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
             if (!(s->supported_resolutions & T30_SUPPORT_300_600_RESOLUTION))
                 bad = T30_ERR_NORESSUPPORT;
             else
-                set_dcs_bit(s, 107);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_300_600);
             break;
         case T4_X_RESOLUTION_600:
             if (!(s->supported_resolutions & T30_SUPPORT_600_600_RESOLUTION))
                 bad = T30_ERR_NORESSUPPORT;
             else
-                set_dcs_bit(s, 105);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_600_600);
             break;
         default:
             bad = T30_ERR_NORESSUPPORT;
@@ -1340,10 +1386,10 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
             switch (s->x_resolution)
             {
             case T4_X_RESOLUTION_R8:
-                set_dcs_bit(s, 41);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_200_400);
                 break;
             case T4_X_RESOLUTION_R16:
-                set_dcs_bit(s, 43);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_400_400);
                 break;
             default:
                 bad = T30_ERR_NORESSUPPORT;
@@ -1358,7 +1404,7 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
             if (!(s->supported_resolutions & T30_SUPPORT_300_300_RESOLUTION))
                 bad = T30_ERR_NORESSUPPORT;
             else
-                set_dcs_bit(s, 42);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_300_300);
             break;
         default:
             bad = T30_ERR_NORESSUPPORT;
@@ -1375,7 +1421,7 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
             switch (s->x_resolution)
             {
             case T4_X_RESOLUTION_R8:
-                set_dcs_bit(s, 15);
+                set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_200_200);
                 break;
             default:
                 bad = T30_ERR_NORESSUPPORT;
@@ -1405,6 +1451,8 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
     /* Deal with the image width. The X resolution will fall in line with any valid width. */
     /* Low (R4) res widths are not supported in recent versions of T.30 */
     bad = T30_ERR_OK;
+    /* The following treats a width field of 11 like 10, which does what note 6 of Table 2/T.30
+       says we should do with the invalid value 11. */
     switch (s->image_width)
     {
     case T4_WIDTH_R8_A4:
@@ -1419,34 +1467,34 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
     case T4_WIDTH_R16_B4:
     case T4_WIDTH_600_B4:
     case T4_WIDTH_1200_B4:
-        if ((s->dis_dtc_frame[5] & (DISBIT2 | DISBIT1)) < 1)
+        if ((s->far_dis_dtc_frame[5] & (DISBIT2 | DISBIT1)) < 1)
             bad = T30_ERR_NOSIZESUPPORT;
         else if (!(s->supported_image_sizes & T30_SUPPORT_255MM_WIDTH))
-            bad = T30_ERR_BADTIFF;
+            bad = T30_ERR_NOSIZESUPPORT;
         else
-            set_dcs_bit(s, 17);
+            set_ctrl_bit(s->dcs_frame, 17);
         break;
     case T4_WIDTH_R8_A3:
     case T4_WIDTH_300_A3:
     case T4_WIDTH_R16_A3:
     case T4_WIDTH_600_A3:
     case T4_WIDTH_1200_A3:
-        if ((s->dis_dtc_frame[5] & (DISBIT2 | DISBIT1)) < 2)
+        if ((s->far_dis_dtc_frame[5] & (DISBIT2 | DISBIT1)) < 2)
             bad = T30_ERR_NOSIZESUPPORT;
         else if (!(s->supported_image_sizes & T30_SUPPORT_303MM_WIDTH))    
-            bad = T30_ERR_BADTIFF;
+            bad = T30_ERR_NOSIZESUPPORT;
         else
-            set_dcs_bit(s, 18);
+            set_ctrl_bit(s->dcs_frame, 18);
         break;
     default:
         /* T.30 does not support this width */
-        bad = T30_ERR_BADTIFF;
+        bad = T30_ERR_NOSIZESUPPORT;
         break;
     }
     if (bad != T30_ERR_OK)
     {
         s->current_status = bad;
-        span_log(&s->logging, SPAN_LOG_FLOW, "Image width (%d pixels) not a valid FAX image width\n", s->image_width);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Image width (%d pixels) not an acceptable FAX image width\n", s->image_width);
         return -1;
     }
     switch (s->image_width)
@@ -1459,53 +1507,60 @@ static int build_dcs(t30_state_t *s, const uint8_t *msg, int len)
     case T4_WIDTH_300_A4:
     case T4_WIDTH_300_B4:
     case T4_WIDTH_300_A3:
-        if (!test_bit(dis_dtc_frame, 42)  &&  !test_bit(dis_dtc_frame, 107))
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_300_300_CAPABLE)  &&  !test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_300_600_CAPABLE))
             bad = T30_ERR_NOSIZESUPPORT;
         break;
     case T4_WIDTH_R16_A4:
     case T4_WIDTH_R16_B4:
     case T4_WIDTH_R16_A3:
-        if (!test_bit(dis_dtc_frame, 43))
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_400_400_CAPABLE))
             bad = T30_ERR_NOSIZESUPPORT;
         break;
     case T4_WIDTH_600_A4:
     case T4_WIDTH_600_B4:
     case T4_WIDTH_600_A3:
-        if (!test_bit(dis_dtc_frame, 105)  &&  !test_bit(dis_dtc_frame, 109))
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_600_600_CAPABLE)  &&  !test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_600_1200_CAPABLE))
             bad = T30_ERR_NOSIZESUPPORT;
         break;
     case T4_WIDTH_1200_A4:
     case T4_WIDTH_1200_B4:
     case T4_WIDTH_1200_A3:
-        if (!test_bit(dis_dtc_frame, 106))
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_1200_1200_CAPABLE))
             bad = T30_ERR_NOSIZESUPPORT;
         break;
     default:
         /* T.30 does not support this width */
-        bad = T30_ERR_BADTIFF;
+        bad = T30_ERR_NOSIZESUPPORT;
         break;
     }
     if (bad != T30_ERR_OK)
     {
         s->current_status = bad;
-        span_log(&s->logging, SPAN_LOG_FLOW, "Image width (%d pixels) not a valid FAX image width\n", s->image_width);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Image width (%d pixels) not an acceptable FAX image width\n", s->image_width);
         return -1;
     }
     /* Deal with the image length */
     /* If the other end supports unlimited length, then use that. Otherwise, if the other end supports
        B4 use that, as its longer than the default A4 length. */
-    if (test_bit(dis_dtc_frame, 20))
-        set_dcs_bit(s, 20);
-    else if (test_bit(dis_dtc_frame, 19))
-        set_dcs_bit(s, 19);
+    if (test_ctrl_bit(s->far_dis_dtc_frame, 20))
+        set_ctrl_bit(s->dcs_frame, 20);
+    else if (test_ctrl_bit(s->far_dis_dtc_frame, 19))
+        set_ctrl_bit(s->dcs_frame, 19);
 
     if (s->error_correcting_mode)
-        set_dcs_bit(s, 27);
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_ECM);
 
-    if ((s->iaf & T30_IAF_MODE_FLOW_CONTROL)  &&  test_bit(dis_dtc_frame, 121))
-        set_dcs_bit(s, 121);
-    if ((s->iaf & T30_IAF_MODE_CONTINUOUS_FLOW)  &&  test_bit(dis_dtc_frame, 123))
-        set_dcs_bit(s, 123);
+    if ((s->iaf & T30_IAF_MODE_FLOW_CONTROL)  &&  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T38_FLOW_CONTROL_CAPABLE))
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T38_FLOW_CONTROL_CAPABLE);
+    if ((s->iaf & T30_IAF_MODE_CONTINUOUS_FLOW)  &&  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T38_FAX_CAPABLE))
+    {
+        /* Clear the modem type bits, in accordance with note 77 of Table 2/T.30 */
+        clr_ctrl_bit(s->local_dis_dtc_frame, 11);
+        clr_ctrl_bit(s->local_dis_dtc_frame, 12);
+        clr_ctrl_bit(s->local_dis_dtc_frame, 13);
+        clr_ctrl_bit(s->local_dis_dtc_frame, 14);
+        set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T38_FAX_MODE);
+    }
     s->dcs_len = 19;
     //t30_decode_dis_dtc_dcs(s, s->dcs_frame, s->dcs_len);
     return 0;
@@ -1517,7 +1572,7 @@ static int prune_dcs(t30_state_t *s)
     int i;
 
     /* Find the last octet that is really needed, set the extension bits, and trim the message length */
-    for (i = 18;  i > 4;  i--)
+    for (i = 18;  i >= 6;  i--)
     {
         /* Strip the top bit */
         s->dcs_frame[i] &= (DISBIT1 | DISBIT2 | DISBIT3 | DISBIT4 | DISBIT5 | DISBIT6 | DISBIT7);
@@ -1527,6 +1582,7 @@ static int prune_dcs(t30_state_t *s)
     }
     s->dcs_len = i + 1;
     /* Fill in any required extension bits */
+    s->local_dis_dtc_frame[i] &= ~DISBIT8;
     for (i--  ;  i > 4;  i--)
         s->dcs_frame[i] |= DISBIT8;
     t30_decode_dis_dtc_dcs(s, s->dcs_frame, s->dcs_len);
@@ -1536,12 +1592,23 @@ static int prune_dcs(t30_state_t *s)
 
 static int step_fallback_entry(t30_state_t *s)
 {
+    int min_row_bits;
+
     while (fallback_sequence[++s->current_fallback].which)
     {
         if ((fallback_sequence[s->current_fallback].which & s->current_permitted_modems))
-            return s->current_fallback;
+            break;
     }
-    return -1;
+    if (fallback_sequence[s->current_fallback].which == 0)
+        return -1;
+    /* TODO: This only sets the minimum row time for future pages. It doesn't fix up the
+             current page, though it is benign - fallback will only result in an excessive
+             minimum. */
+    min_row_bits = set_min_scan_time_code(s);
+    t4_tx_set_min_row_bits(&s->t4, min_row_bits);
+    /* We need to rebuild the DCS message we will send. */
+    build_dcs(s);
+    return s->current_fallback;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -1569,48 +1636,199 @@ static void send_dcn(t30_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-static void send_dis_or_dtc_sequence(t30_state_t *s)
+static void return_to_phase_b(t30_state_t *s, int with_fallback)
 {
-    prune_dis_dtc(s);
-    set_state(s, T30_STATE_R);
-    if (send_nsf_frame(s))
+    /* This is what we do after things like T30_EOM is exchanged. */
+#if 0
+    if (step_fallback_entry(s) < 0)
     {
-        s->step = 0;
-        return;
+        /* We have fallen back as far as we can go. Give up. */
+        s->current_fallback = 0;
+        s->current_status = T30_ERR_CANNOT_TRAIN;
+        send_dcn(s);
     }
-    if (send_ident_frame(s, T30_CSI))
+    else
     {
-        s->step = 1;
-        return;
+        if (s->calling_party)
+            set_state(s, T30_STATE_T);
+        else
+            set_state(s, T30_STATE_R);
     }
-    set_dis_or_dtc(s);
-    send_frame(s, s->dis_dtc_frame, s->dis_dtc_len);
-    s->step = 2;
+#else
+    if (s->calling_party)
+        set_state(s, T30_STATE_T);
+    else
+        set_state(s, T30_STATE_R);
+#endif
 }
 /*- End of function --------------------------------------------------------*/
 
-static void send_dcs_sequence(t30_state_t *s)
+static int send_dis_or_dtc_sequence(t30_state_t *s, int start)
 {
-    /* Schedule training after the messages */
-    prune_dcs(s);
-    set_state(s, T30_STATE_D);
-    if (send_pw_frame(s))
+    /* (NSF) (CSI) DIS */
+    /* (NSC) (CIG) (PWD) (SEP) (PSA) (CIA) (ISP) DTC */
+    if (start)
     {
+        set_dis_or_dtc(s);
+        set_state(s, T30_STATE_R);
         s->step = 0;
-        return;
     }
-    if (send_sub_frame(s))
+    if (!s->dis_received)
     {
-        s->step = 1;
-        return;
+        /* DIS sequence */
+        switch (s->step)
+        {
+        case 0:
+            s->step++;
+            if (send_nsf_frame(s))
+                break;
+            /* Fall through */
+        case 1:
+            s->step++;
+            if (send_ident_frame(s, T30_CSI))
+                break;
+            /* Fall through */
+        case 2:
+            s->step++;
+            prune_dis_dtc(s);
+            send_frame(s, s->local_dis_dtc_frame, s->local_dis_dtc_len);
+            break;
+        case 3:
+            s->step++;
+            /* Shut down HDLC transmission. */
+            if (s->send_hdlc_handler)
+                s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+            break;
+        default:
+            return -1;
+        }
     }
-    if (send_ident_frame(s, T30_TSI))
+    else
     {
-        s->step = 2;
-        return;
+        /* DTC sequence */
+        switch (s->step)
+        {
+        case 0:
+            s->step++;
+            if (send_nsc_frame(s))
+                break;
+            /* Fall through */
+        case 1:
+            s->step++;
+            if (send_ident_frame(s, T30_CIG))
+                break;
+            /* Fall through */
+        case 2:
+            s->step++;
+            if (send_pwd_frame(s))
+                break;
+            /* Fall through */
+        case 3:
+            s->step++;
+            if (send_sep_frame(s))
+                break;
+            /* Fall through */
+        case 4:
+            s->step++;
+            if (send_psa_frame(s))
+                break;
+            /* Fall through */
+        case 5:
+            s->step++;
+            if (send_cia_frame(s))
+                break;
+            /* Fall through */
+        case 6:
+            s->step++;
+            if (send_isp_frame(s))
+                break;
+            /* Fall through */
+        case 7:
+            s->step++;
+            prune_dis_dtc(s);
+            send_frame(s, s->local_dis_dtc_frame, s->local_dis_dtc_len);
+            break;
+        case 8:
+            s->step++;
+            /* Shut down HDLC transmission. */
+            if (s->send_hdlc_handler)
+                s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+            break;
+        default:
+            return -1;
+        }
     }
-    send_frame(s, s->dcs_frame, s->dcs_len);
-    s->step = 3;
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_dcs_sequence(t30_state_t *s, int start)
+{
+    /* (NSS) (TSI) (SUB) (SID) (TSA) (IRA) DCS */
+    /* Schedule training after the messages */
+    if (start)
+    {
+        prune_dcs(s);
+        set_state(s, T30_STATE_D);
+        s->step = 0;
+    }
+    switch (s->step)
+    {
+    case 0:
+        s->step++;
+        if (send_nss_frame(s))
+            break;
+        /* Fall through */
+    case 1:
+        s->step++;
+        if (send_ident_frame(s, T30_TSI))
+            break;
+        /* Fall through */
+    case 2:
+        s->step++;
+        if (send_sub_frame(s))
+            break;
+        /* Fall through */
+    case 3:
+        s->step++;
+        if (send_sid_frame(s))
+            break;
+        /* Fall through */
+    case 4:
+        s->step++;
+        if (send_tsa_frame(s))
+            break;
+        /* Fall through */
+    case 5:
+        s->step++;
+        if (send_ira_frame(s))
+            break;
+        /* Fall through */
+    case 6:
+        s->step++;
+        prune_dcs(s);
+        send_frame(s, s->dcs_frame, s->dcs_len);
+        break;
+    case 7:
+        s->step++;
+        /* Shut down HDLC transmission. */
+        if (s->send_hdlc_handler)
+            s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+        break;
+    default:
+        return -1;
+    }
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int send_cfr_sequence(t30_state_t *s, int start)
+{
+    /* (CSA) CFR */
+    /* CFR is usually a simple frame, but can become a sequence with Internet
+       FAXing. */
+    send_simple_frame(s, T30_CFR);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -1619,8 +1837,16 @@ static void disconnect(t30_state_t *s)
     span_log(&s->logging, SPAN_LOG_FLOW, "Disconnecting\n");
     /* Make sure any FAX in progress is tidied up. If the tidying up has
        already happened, repeating it here is harmless. */
-    t4_rx_end(&(s->t4));
-    t4_tx_end(&(s->t4));
+    switch (s->operation_in_progress)
+    {
+    case OPERATION_IN_PROGRESS_T4_TX:
+        t4_tx_release(&s->t4);
+        break;
+    case OPERATION_IN_PROGRESS_T4_RX:
+        t4_rx_release(&s->t4);
+        break;
+    }
+    s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
     s->timer_t0_t1 = 0;
     s->timer_t2_t4 = 0;
     s->timer_t3 = 0;
@@ -1630,7 +1856,7 @@ static void disconnect(t30_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-static int set_min_scan_time_code(t30_state_t *s, const uint8_t *msg, int len)
+static int set_min_scan_time_code(t30_state_t *s)
 {
     /* Translation between the codes for the minimum scan times the other end needs,
        and the codes for what we say will be used. We need 0 minimum. */
@@ -1640,49 +1866,51 @@ static int set_min_scan_time_code(t30_state_t *s, const uint8_t *msg, int len)
         {T30_MIN_SCAN_20MS, T30_MIN_SCAN_5MS, T30_MIN_SCAN_10MS, T30_MIN_SCAN_10MS, T30_MIN_SCAN_40MS, T30_MIN_SCAN_20MS, T30_MIN_SCAN_5MS,  T30_MIN_SCAN_0MS}, /* fine */
         {T30_MIN_SCAN_10MS, T30_MIN_SCAN_5MS, T30_MIN_SCAN_5MS,  T30_MIN_SCAN_5MS,  T30_MIN_SCAN_20MS, T30_MIN_SCAN_10MS, T30_MIN_SCAN_5MS,  T30_MIN_SCAN_0MS}  /* superfine, when half fine time is selected */
     };
-    int min_bits_field;
-
-    /* Set the minimum scan time bits */
-    if ((s->iaf & T30_IAF_MODE_NO_FILL_BITS)  ||  len <= 5)
-        min_bits_field = T30_MIN_SCAN_0MS;
-    else
-        min_bits_field = (msg[5] >> 4) & 7;
-    switch (s->y_resolution)
-    {
-    case T4_Y_RESOLUTION_SUPERFINE:
-        if (len > 8  &&  (msg[8] & DISBIT1))
-        {
-            s->min_scan_time_code = translate_min_scan_time[((msg[8] & DISBIT6))  ?  2  :  1][min_bits_field];
-            break;
-        }
-        s->current_status = T30_ERR_NORESSUPPORT;
-        span_log(&s->logging, SPAN_LOG_FLOW, "Remote FAX does not support super-fine resolution.\n");
-        return -1;
-    case T4_Y_RESOLUTION_FINE:
-        if (len > 4  &&  (msg[4] & DISBIT7))
-        {
-            s->min_scan_time_code = translate_min_scan_time[1][min_bits_field];
-            break;
-        }
-        s->current_status = T30_ERR_NORESSUPPORT;
-        span_log(&s->logging, SPAN_LOG_FLOW, "Remote FAX does not support fine resolution.\n");
-        return -1;
-    default:
-    case T4_Y_RESOLUTION_STANDARD:
-        s->min_scan_time_code = translate_min_scan_time[0][min_bits_field];
-        break;
-    }
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-static int start_sending_document(t30_state_t *s, const uint8_t *msg, int len)
-{
     /* Translation between the codes for the minimum scan time we will use, and milliseconds. */
     static const int min_scan_times[8] =
     {
         20, 5, 10, 0, 40, 0, 0, 0
     };
+    int min_bits_field;
+
+    /* Set the minimum scan time bits */
+    if (s->error_correcting_mode)
+        min_bits_field = T30_MIN_SCAN_0MS;
+    else
+        min_bits_field = (s->far_dis_dtc_frame[5] >> 4) & 7;
+    switch (s->y_resolution)
+    {
+    case T4_Y_RESOLUTION_SUPERFINE:
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_200_400_CAPABLE))
+        {
+            s->current_status = T30_ERR_NORESSUPPORT;
+            span_log(&s->logging, SPAN_LOG_FLOW, "Remote FAX does not support super-fine resolution.\n");
+            return -1;
+        }
+        s->min_scan_time_code = translate_min_scan_time[(test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_MIN_SCAN_TIME_HALVES))  ?  2  :  1][min_bits_field];
+        break;
+    case T4_Y_RESOLUTION_FINE:
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_200_200_CAPABLE))
+        {
+            s->current_status = T30_ERR_NORESSUPPORT;
+            span_log(&s->logging, SPAN_LOG_FLOW, "Remote FAX does not support fine resolution.\n");
+            return -1;
+        }
+        s->min_scan_time_code = translate_min_scan_time[1][min_bits_field];
+        break;
+    default:
+    case T4_Y_RESOLUTION_STANDARD:
+        s->min_scan_time_code = translate_min_scan_time[0][min_bits_field];
+        break;
+    }
+    if (!s->error_correcting_mode  &&  (s->iaf & T30_IAF_MODE_NO_FILL_BITS))
+        return 0;
+    return fallback_sequence[s->current_fallback].bit_rate*min_scan_times[s->min_scan_time_code]/1000;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int start_sending_document(t30_state_t *s)
+{
     int min_row_bits;
 
     if (s->tx_file[0] == '\0')
@@ -1692,38 +1920,34 @@ static int start_sending_document(t30_state_t *s, const uint8_t *msg, int len)
         return -1;
     }
     span_log(&s->logging, SPAN_LOG_FLOW, "Start sending document\n");
-    if (t4_tx_init(&(s->t4), s->tx_file, s->tx_start_page, s->tx_stop_page) == NULL)
+    if (t4_tx_init(&s->t4, s->tx_file, s->tx_start_page, s->tx_stop_page) == NULL)
     {
         span_log(&s->logging, SPAN_LOG_WARNING, "Cannot open source TIFF file '%s'\n", s->tx_file);
         s->current_status = T30_ERR_FILEERROR;
         return -1;
     }
-    t4_tx_get_pages_in_file(&(s->t4));
-    t4_tx_set_tx_encoding(&(s->t4), s->line_encoding);
-    t4_tx_set_local_ident(&(s->t4), s->local_ident);
-    t4_tx_set_header_info(&(s->t4), s->header_info);
+    s->operation_in_progress = OPERATION_IN_PROGRESS_T4_TX;
+    t4_tx_get_pages_in_file(&s->t4);
+    t4_tx_set_tx_encoding(&s->t4, s->line_encoding);
+    t4_tx_set_local_ident(&s->t4, s->tx_info.ident);
+    t4_tx_set_header_info(&s->t4, s->header_info);
 
-    s->x_resolution = t4_tx_get_x_resolution(&(s->t4));
-    s->y_resolution = t4_tx_get_y_resolution(&(s->t4));
+    s->x_resolution = t4_tx_get_x_resolution(&s->t4);
+    s->y_resolution = t4_tx_get_y_resolution(&s->t4);
     /* The minimum scan time to be used can't be evaluated until we know the Y resolution, and
        must be evaluated before the minimum scan row bits can be evaluated. */
-    if (set_min_scan_time_code(s, msg, len))
+    if ((min_row_bits = set_min_scan_time_code(s)) < 0)
     {
-        t4_tx_end(&(s->t4));
+        t4_tx_release(&s->t4);
+        s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
         return -1;
     }
-    min_row_bits = fallback_sequence[s->current_fallback].bit_rate*min_scan_times[s->min_scan_time_code]/1000;
     span_log(&s->logging, SPAN_LOG_FLOW, "Minimum bits per row will be %d\n", min_row_bits);
-    t4_tx_set_min_row_bits(&(s->t4), (s->forced_min_non_ecm_row_bits >= 0)  ?  s->forced_min_non_ecm_row_bits  :  min_row_bits);
+    t4_tx_set_min_row_bits(&s->t4, min_row_bits);
 
-    if (t4_tx_start_page(&(s->t4)))
-    {
-        t4_tx_end(&(s->t4));
+    if (tx_start_page(s))
         return -1;
-    }
-    s->image_width = t4_tx_get_image_width(&(s->t4));
-    s->ecm_page = 0;
-    s->ecm_block = 0;
+    s->image_width = t4_tx_get_image_width(&s->t4);
     if (s->error_correcting_mode)
     {
         if (get_partial_ecm_page(s) == 0)
@@ -1735,10 +1959,10 @@ static int start_sending_document(t30_state_t *s, const uint8_t *msg, int len)
 
 static int restart_sending_document(t30_state_t *s)
 {
-    t4_tx_restart_page(&(s->t4));
+    t4_tx_restart_page(&s->t4);
     s->retries = 0;
     s->ecm_block = 0;
-    send_dcs_sequence(s);
+    send_dcs_sequence(s, TRUE);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
@@ -1753,38 +1977,25 @@ static int start_receiving_document(t30_state_t *s)
     }
     span_log(&s->logging, SPAN_LOG_FLOW, "Start receiving document\n");
     queue_phase(s, T30_PHASE_B_TX);
-    s->dis_received = FALSE;
-    s->ecm_page = 0;
     s->ecm_block = 0;
-    send_dis_or_dtc_sequence(s);
+    send_dis_or_dtc_sequence(s, TRUE);
     return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-static void unexpected_frame(t30_state_t *s, const uint8_t *msg, int len)
-{
-    span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected %s received in state %d\n", t30_frametype(msg[2]), s->state);
-    switch (s->state)
-    {
-    case T30_STATE_F_DOC_ECM:
-    case T30_STATE_F_DOC_NON_ECM:
-        s->current_status = T30_ERR_INVALCMDRX;
-        break;
-    }
 }
 /*- End of function --------------------------------------------------------*/
 
 static void unexpected_non_final_frame(t30_state_t *s, const uint8_t *msg, int len)
 {
     span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected %s frame in state %d\n", t30_frametype(msg[2]), s->state);
-    s->current_status = T30_ERR_UNEXPECTED;
+    if (s->current_status == T30_ERR_OK)
+        s->current_status = T30_ERR_UNEXPECTED;
 }
 /*- End of function --------------------------------------------------------*/
 
 static void unexpected_final_frame(t30_state_t *s, const uint8_t *msg, int len)
 {
-    span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected %s received in state %d\n", t30_frametype(msg[2]), s->state);
-    s->current_status = T30_ERR_UNEXPECTED;
+    span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected %s frame in state %d\n", t30_frametype(msg[2]), s->state);
+    if (s->current_status == T30_ERR_OK)
+        s->current_status = T30_ERR_UNEXPECTED;
     send_dcn(s);
 }
 /*- End of function --------------------------------------------------------*/
@@ -1792,17 +2003,17 @@ static void unexpected_final_frame(t30_state_t *s, const uint8_t *msg, int len)
 static void unexpected_frame_length(t30_state_t *s, const uint8_t *msg, int len)
 {
     span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected %s frame length - %d\n", t30_frametype(msg[0]), len);
-    s->current_status = T30_ERR_UNEXPECTED;
+    if (s->current_status == T30_ERR_OK)
+        s->current_status = T30_ERR_UNEXPECTED;
     send_dcn(s);
 }
 /*- End of function --------------------------------------------------------*/
 
 static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
 {
-    uint8_t dis_dtc_frame[T30_MAX_DIS_DTC_DCS_LEN];
-    
-    t30_decode_dis_dtc_dcs(s, msg, len);
+    int new_status;
 
+    t30_decode_dis_dtc_dcs(s, msg, len);
     if (len < 6)
     {
         span_log(&s->logging, SPAN_LOG_FLOW, "Short DIS/DTC frame\n");
@@ -1813,25 +2024,27 @@ static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
         s->dis_received = TRUE;
     /* Make a local copy of the message, padded to the maximum possible length with zeros. This allows
        us to simply pick out the bits, without worrying about whether they were set from the remote side. */
-    if (len > T30_MAX_DIS_DTC_DCS_LEN)
-    {
-        memcpy(dis_dtc_frame, msg, T30_MAX_DIS_DTC_DCS_LEN);
-    }
-    else
-    {
-        memcpy(dis_dtc_frame, msg, len);
-        if (len < T30_MAX_DIS_DTC_DCS_LEN)
-            memset(dis_dtc_frame + len, 0, T30_MAX_DIS_DTC_DCS_LEN - len);
-    }
-    s->error_correcting_mode = (s->ecm_allowed  &&  (dis_dtc_frame[6] & DISBIT3) != 0);
+    s->far_dis_dtc_len = (len > T30_MAX_DIS_DTC_DCS_LEN)  ?  T30_MAX_DIS_DTC_DCS_LEN  :  len;
+    memcpy(s->far_dis_dtc_frame, msg, s->far_dis_dtc_len);
+    if (s->far_dis_dtc_len < T30_MAX_DIS_DTC_DCS_LEN)
+        memset(s->far_dis_dtc_frame + s->far_dis_dtc_len, 0, T30_MAX_DIS_DTC_DCS_LEN - s->far_dis_dtc_len);
+    s->error_correcting_mode = (s->ecm_allowed  &&  (s->far_dis_dtc_frame[6] & DISBIT3) != 0);
     /* 256 octets per ECM frame */
     s->octets_per_ecm_frame = 256;
     /* Select the compression to use. */
-    if (s->error_correcting_mode  &&  (s->supported_compressions & T30_SUPPORT_T6_COMPRESSION)  &&  (dis_dtc_frame[6] & DISBIT7))
+#if 0
+    if (s->error_correcting_mode  &&  (s->supported_compressions & T30_SUPPORT_T85_COMPRESSION)  &&  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T85_CAPABLE))
+    {
+        s->line_encoding = T4_COMPRESSION_ITU_T85;
+    }
+    else if (s->error_correcting_mode  &&  (s->supported_compressions & T30_SUPPORT_T6_COMPRESSION)  &&  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T6_CAPABLE))
+#else
+    if (s->error_correcting_mode  &&  (s->supported_compressions & T30_SUPPORT_T6_COMPRESSION)  &&  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_T6_CAPABLE))
+#endif
     {
         s->line_encoding = T4_COMPRESSION_ITU_T6;
     }
-    else if ((s->supported_compressions & T30_SUPPORT_T4_2D_COMPRESSION)  &&  (dis_dtc_frame[4] & DISBIT8))
+    else if ((s->supported_compressions & T30_SUPPORT_T4_2D_COMPRESSION)  &&  test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_2D_CAPABLE))
     {
         s->line_encoding = T4_COMPRESSION_ITU_T4_2D;
     }
@@ -1839,8 +2052,8 @@ static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
     {
         s->line_encoding = T4_COMPRESSION_ITU_T4_1D;
     }
-    span_log(&s->logging, SPAN_LOG_FLOW, "Selected compression %d\n", s->line_encoding);
-    switch (dis_dtc_frame[4] & (DISBIT6 | DISBIT5 | DISBIT4 | DISBIT3))
+    span_log(&s->logging, SPAN_LOG_FLOW, "Selected compression %s (%d)\n", t4_encoding_to_str(s->line_encoding), s->line_encoding);
+    switch (s->far_dis_dtc_frame[4] & (DISBIT6 | DISBIT5 | DISBIT4 | DISBIT3))
     {
     case (DISBIT6 | DISBIT4 | DISBIT3):
         if ((s->supported_modems & T30_SUPPORT_V17))
@@ -1882,31 +2095,41 @@ static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
         return -1;
     }
     if (s->phase_b_handler)
-        s->phase_b_handler(s, s->phase_d_user_data, msg[2]);
+    {
+        new_status = s->phase_b_handler(s, s->phase_b_user_data, msg[2]);
+        if (new_status != T30_ERR_OK)
+        {
+            span_log(&s->logging, SPAN_LOG_FLOW, "Application rejected DIS/DTC - '%s'\n", t30_completion_code_to_str(new_status));
+            s->current_status = new_status;
+            /* TODO: If FNV is allowed, process it here */
+            send_dcn(s);
+            return -1;
+        }
+    }
     queue_phase(s, T30_PHASE_B_TX);
     /* Try to send something */
     if (s->tx_file[0])
     {
         span_log(&s->logging, SPAN_LOG_FLOW, "Trying to send file '%s'\n", s->tx_file);
-        if ((msg[4] & DISBIT2) == 0)
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_READY_TO_RECEIVE_FAX_DOCUMENT))
         {
             span_log(&s->logging, SPAN_LOG_FLOW, "%s far end cannot receive\n", t30_frametype(msg[2]));
             s->current_status = T30_ERR_RX_INCAPABLE;
             send_dcn(s);
         }
-        if (start_sending_document(s, msg, len))
+        if (start_sending_document(s))
         {
             send_dcn(s);
             return -1;
         }
-        if (build_dcs(s, msg, len))
+        if (build_dcs(s))
         {
             span_log(&s->logging, SPAN_LOG_FLOW, "The far end is incompatible\n", s->tx_file);
             send_dcn(s);
             return -1;
         }
         s->retries = 0;
-        send_dcs_sequence(s);
+        send_dcs_sequence(s, TRUE);
         return 0;
     }
     span_log(&s->logging, SPAN_LOG_FLOW, "%s nothing to send\n", t30_frametype(msg[2]));
@@ -1914,7 +2137,7 @@ static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
     if (s->rx_file[0])
     {
         span_log(&s->logging, SPAN_LOG_FLOW, "Trying to receive file '%s'\n", s->rx_file);
-        if ((msg[4] & DISBIT1) == 0)
+        if (!test_ctrl_bit(s->far_dis_dtc_frame, T30_DIS_BIT_READY_TO_TRANSMIT_FAX_DOCUMENT))
         {
             span_log(&s->logging, SPAN_LOG_FLOW, "%s far end cannot transmit\n", t30_frametype(msg[2]));
             s->current_status = T30_ERR_TX_INCAPABLE;
@@ -1926,7 +2149,6 @@ static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
             send_dcn(s);
             return -1;
         }
-        s->dis_received = TRUE;
         if (set_dis_or_dtc(s))
         {
             s->current_status = T30_ERR_INCOMPATIBLE;
@@ -1934,7 +2156,7 @@ static int process_rx_dis_dtc(t30_state_t *s, const uint8_t *msg, int len)
             return -1;
         }
         s->retries = 0;
-        send_dis_or_dtc_sequence(s);
+        send_dis_or_dtc_sequence(s, TRUE);
         return 0;
     }
     span_log(&s->logging, SPAN_LOG_FLOW, "%s nothing to receive\n", t30_frametype(msg[2]));
@@ -1957,6 +2179,7 @@ static int process_rx_dcs(t30_state_t *s, const uint8_t *msg, int len)
     };
     uint8_t dcs_frame[T30_MAX_DIS_DTC_DCS_LEN];
     int i;
+    int new_status;
 
     t30_decode_dis_dtc_dcs(s, msg, len);
 
@@ -1985,30 +2208,30 @@ static int process_rx_dcs(t30_state_t *s, const uint8_t *msg, int len)
             memset(dcs_frame + len, 0, T30_MAX_DIS_DTC_DCS_LEN - len);
     }
 
-    s->octets_per_ecm_frame = test_bit(dcs_frame, 28)  ?  256  :  64;
+    s->octets_per_ecm_frame = test_ctrl_bit(dcs_frame, T30_DCS_BIT_64_OCTET_ECM_FRAMES)  ?  256  :  64;
 
-    if (test_bit(dcs_frame, 106))
+    if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_1200_1200))
         s->x_resolution = T4_X_RESOLUTION_1200;
-    else if (test_bit(dcs_frame, 105)  ||  test_bit(dcs_frame, 109))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_600_600)  ||  test_ctrl_bit(dcs_frame, T30_DCS_BIT_600_1200))
         s->x_resolution = T4_X_RESOLUTION_600;
-    else if (test_bit(dcs_frame, 43)  ||  test_bit(dcs_frame, 108))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_400_400)  ||  test_ctrl_bit(dcs_frame, T30_DCS_BIT_400_800))
         s->x_resolution = T4_X_RESOLUTION_R16;
-    else if (test_bit(dcs_frame, 42)  ||  test_bit(dcs_frame, 107))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_300_300)  ||  test_ctrl_bit(dcs_frame, T30_DCS_BIT_300_600))
         s->x_resolution = T4_X_RESOLUTION_300;
     else
         s->x_resolution = T4_X_RESOLUTION_R8;
 
-    if (test_bit(dcs_frame, 106)  ||  test_bit(dcs_frame, 109))
+    if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_1200_1200)  ||  test_ctrl_bit(dcs_frame, T30_DCS_BIT_600_1200))
         s->y_resolution = T4_Y_RESOLUTION_1200;
-    else if (test_bit(dcs_frame, 108))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_400_800))
         s->y_resolution = T4_Y_RESOLUTION_800;
-    else if (test_bit(dcs_frame, 105)  ||  test_bit(dcs_frame, 107))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_600_600)  ||  test_ctrl_bit(dcs_frame, T30_DCS_BIT_300_600))
         s->y_resolution = T4_Y_RESOLUTION_600;
-    else if (test_bit(dcs_frame, 41)  ||  test_bit(dcs_frame, 43))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_200_400)  ||  test_ctrl_bit(dcs_frame, T30_DCS_BIT_400_400))
         s->y_resolution = T4_Y_RESOLUTION_SUPERFINE;
-    else if (test_bit(dcs_frame, 42))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_300_300))
         s->y_resolution = T4_Y_RESOLUTION_300;
-    else if (test_bit(dcs_frame, 15))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_200_200))
         s->y_resolution = T4_Y_RESOLUTION_FINE;
     else
         s->y_resolution = T4_Y_RESOLUTION_STANDARD;
@@ -2029,25 +2252,41 @@ static int process_rx_dcs(t30_state_t *s, const uint8_t *msg, int len)
     s->image_width = widths[i][dcs_frame[5] & (DISBIT2 | DISBIT1)];
 
     /* Check which compression we will use. */
-    if (test_bit(dcs_frame, 31))
+#if 0
+    if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_T85_MODE))
+        s->line_encoding = T4_COMPRESSION_ITU_T85;
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_T6_MODE))
+#else
+    if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_T6_MODE))
+#endif
         s->line_encoding = T4_COMPRESSION_ITU_T6;
-    else if (test_bit(dcs_frame, 16))
+    else if (test_ctrl_bit(dcs_frame, T30_DCS_BIT_2D_CODING))
         s->line_encoding = T4_COMPRESSION_ITU_T4_2D;
     else
         s->line_encoding = T4_COMPRESSION_ITU_T4_1D;
     span_log(&s->logging, SPAN_LOG_FLOW, "Selected compression %d\n", s->line_encoding);
-    if (!(dcs_frame[4] & DISBIT2))
-        span_log(&s->logging, SPAN_LOG_FLOW, "Remote cannot receive\n");
+    if (!test_ctrl_bit(dcs_frame, T30_DCS_BIT_RECEIVE_FAX_DOCUMENT))
+        span_log(&s->logging, SPAN_LOG_PROTOCOL_WARNING, "Remote is not requesting receive in DCS\n");
 
     if ((s->current_fallback = find_fallback_entry(dcs_frame[4] & (DISBIT6 | DISBIT5 | DISBIT4 | DISBIT3))) < 0)
     {
         span_log(&s->logging, SPAN_LOG_FLOW, "Remote asked for a modem standard we do not support\n");
         return -1;
     }
-    s->error_correcting_mode = (test_bit(dcs_frame, 27) != 0);
+    s->error_correcting_mode = (test_ctrl_bit(dcs_frame, T30_DCS_BIT_ECM) != 0);
 
     if (s->phase_b_handler)
-        s->phase_b_handler(s, s->phase_d_user_data, T30_DCS);
+    {
+        new_status = s->phase_b_handler(s, s->phase_b_user_data, msg[2]);
+        if (new_status != T30_ERR_OK)
+        {
+            span_log(&s->logging, SPAN_LOG_FLOW, "Application rejected DCS - '%s'\n", t30_completion_code_to_str(new_status));
+            s->current_status = new_status;
+            /* TODO: If FNV is allowed, process it here */
+            send_dcn(s);
+            return -1;
+        }
+    }
     /* Start document reception */
     span_log(&s->logging,
              SPAN_LOG_FLOW, 
@@ -2061,17 +2300,24 @@ static int process_rx_dcs(t30_state_t *s, const uint8_t *msg, int len)
         send_dcn(s);
         return -1;
     }
-    if (!s->in_message  &&  t4_rx_init(&(s->t4), s->rx_file, s->output_encoding) == NULL)
+    if (!s->in_message)
     {
-        span_log(&s->logging, SPAN_LOG_WARNING, "Cannot open target TIFF file '%s'\n", s->rx_file);
-        s->current_status = T30_ERR_FILEERROR;
-        send_dcn(s);
-        return -1;
+        if (t4_rx_init(&s->t4, s->rx_file, s->output_encoding) == NULL)
+        {
+            span_log(&s->logging, SPAN_LOG_WARNING, "Cannot open target TIFF file '%s'\n", s->rx_file);
+            s->current_status = T30_ERR_FILEERROR;
+            send_dcn(s);
+            return -1;
+        }
+        s->operation_in_progress = OPERATION_IN_PROGRESS_T4_RX;
     }
     if (!(s->iaf & T30_IAF_MODE_NO_TCF))
     {
+        /* TCF is always sent with long training */
+        s->short_train = FALSE;
         set_state(s, T30_STATE_F_TCF);
-        set_phase(s, T30_PHASE_C_NON_ECM_RX);
+        queue_phase(s, T30_PHASE_C_NON_ECM_RX);
+        timer_t2_start(s);
     }
     return 0;
 }
@@ -2083,17 +2329,16 @@ static int send_deferred_pps_response(t30_state_t *s)
     if (s->ecm_first_bad_frame >= s->ecm_frames)
     {
         /* Everything was OK. We can accept the data and move on. */
+        t30_ecm_commit_partial_page(s);
         switch (s->last_pps_fcf2)
         {
         case T30_NULL:
             /* We can confirm this partial page. */
-            t30_ecm_commit_partial_page(s);
             break;
         default:
             /* We can confirm the whole page. */
             s->next_rx_step = s->last_pps_fcf2;
-            t30_ecm_commit_partial_page(s);
-            t4_rx_end_page(&(s->t4));
+            rx_end_page(s);
             if (s->phase_d_handler)
                 s->phase_d_handler(s, s->phase_d_user_data, s->last_pps_fcf2);
             rx_start_page(s);
@@ -2106,8 +2351,8 @@ static int send_deferred_pps_response(t30_state_t *s)
     {
         /* We need to send the PPR frame we have created, to try to fill in the missing/bad data. */
         set_state(s, T30_STATE_F_POST_RCP_PPR);
-        s->ecm_frame_map[0] = 0xFF;
-        s->ecm_frame_map[1] = 0x13;
+        s->ecm_frame_map[0] = ADDRESS_FIELD;
+        s->ecm_frame_map[1] = CONTROL_FIELD_FINAL_FRAME;
         s->ecm_frame_map[2] = (uint8_t) (T30_PPR | s->dis_received);
         send_frame(s, s->ecm_frame_map, 3 + 32);
     }
@@ -2132,6 +2377,7 @@ static int process_rx_pps(t30_state_t *s, const uint8_t *msg, int len)
     s->last_pps_fcf2 = msg[3] & 0xFE;
     page = msg[4];
     block = msg[5];
+
     /* The frames count is not well specified in T.30. In practice it seems it might be the
        number of frames in the current block, or it might be the number of frames in the
        current burst of transmission. For a burst of resent frames this would make it smaller
@@ -2155,22 +2401,31 @@ static int process_rx_pps(t30_state_t *s, const uint8_t *msg, int len)
             frames = 0;
         }
     }
-    span_log(&s->logging, SPAN_LOG_FLOW, "Received PPS + %s\n", t30_frametype(msg[3]));
-    /* Build a bit map of which frames we now have stored OK */
-    frame_no = 0;
-    s->ecm_first_bad_frame = 256;
-    for (i = 3;  i < 3 + 32;  i++)
+    span_log(&s->logging, SPAN_LOG_FLOW, "Received PPS + %s - page %d, block %d, %d frames\n", t30_frametype(msg[3]), page, block, frames);
+    if (page != s->rx_page_number)
     {
-        s->ecm_frame_map[i] = 0;
+        span_log(&s->logging, SPAN_LOG_FLOW, "ECM rx page mismatch - expected %d, but received %d.\n", s->rx_page_number, page);
+    }
+    if (block != s->ecm_block)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "ECM rx block mismatch - expected %d, but received %d.\n", s->ecm_block, block);
+    }
+    /* Build a bit map of which frames we now have stored OK */
+    s->ecm_first_bad_frame = 256;
+    for (i = 0;  i < 32;  i++)
+    {
+        s->ecm_frame_map[i + 3] = 0;
         for (j = 0;  j < 8;  j++)
         {
+            frame_no = (i << 3) + j;
             if (s->ecm_len[frame_no] < 0)
-            {   
-                s->ecm_frame_map[i] |= (1 << j);
+            {
+                s->ecm_frame_map[i + 3] |= (1 << j);
                 if (frame_no < s->ecm_first_bad_frame)
                     s->ecm_first_bad_frame = frame_no;
+                if (frame_no < s->ecm_frames)
+                    s->error_correcting_mode_retries++;
             }
-            frame_no++;
         }
     }
     /* Are there any bad frames, or does our scan represent things being OK? */
@@ -2178,15 +2433,16 @@ static int process_rx_pps(t30_state_t *s, const uint8_t *msg, int len)
     {
     case T30_NULL:
     case T30_EOP:
-    case T30_EOM:
-    case T30_MPS:
     case T30_PRI_EOP:
+    case T30_EOM:
     case T30_PRI_EOM:
+    case T30_EOS:
+    case T30_MPS:
     case T30_PRI_MPS:
         if (s->receiver_not_ready_count > 0)
         {
-            queue_phase(s, T30_PHASE_D_TX);
             s->receiver_not_ready_count--;
+            queue_phase(s, T30_PHASE_D_TX);
             set_state(s, T30_STATE_F_POST_RCP_RNR);
             send_simple_frame(s, T30_RNR);
         }
@@ -2208,24 +2464,60 @@ static void process_rx_ppr(t30_state_t *s, const uint8_t *msg, int len)
     int i;
     int j;
     int frame_no;
-    int mask;
     uint8_t frame[4];
 
-    if (++s->ppr_count >= 4)
+    if (len != 3 + 32)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Bad length for PPR bits - %d\n", len);
+        /* TODO: probably should send DCN */
+        return;
+    }
+    /* Check which frames are OK, and mark them as OK. */
+    for (i = 0;  i < 32;  i++)
+    {
+        for (j = 0;  j < 8;  j++)
+        {
+            frame_no = (i << 3) + j;
+            /* Tick off the frames they are not complaining about as OK */
+            if ((msg[i + 3] & (1 << j)) == 0)
+            {
+                if (s->ecm_len[frame_no] >= 0)
+                    s->ecm_progress++;
+                s->ecm_len[frame_no] = -1;
+            }
+            else
+            {
+                if (frame_no < s->ecm_frames)
+                {
+                    span_log(&s->logging, SPAN_LOG_FLOW, "Frame %d to be resent\n", frame_no);
+                    s->error_correcting_mode_retries++;
+                }
+#if 0
+                /* Diagnostic: See if the other end is complaining about something we didn't even send this time. */
+                if (s->ecm_len[frame_no] < 0)
+                    span_log(&s->logging, SPAN_LOG_FLOW, "PPR contains complaint about frame %d, which was not sent\n", frame_no);
+#endif
+            }
+        }
+    }
+    if (++s->ppr_count >= PPR_LIMIT_BEFORE_CTC_OR_EOR)
     {
         /* Continue to correct? */
-        /* TODO: Decide if we should continue */
         /* Continue only if we have been making progress */
-        if (1)
+        s->ppr_count = 0;
+        if (s->ecm_progress)
         {
+            s->ecm_progress = 0;
+            queue_phase(s, T30_PHASE_D_TX);
             set_state(s, T30_STATE_IV_CTC);
             send_simple_frame(s, T30_CTC);
         }
         else
         {
             set_state(s, T30_STATE_IV_EOR);
-            frame[0] = 0xFF;
-            frame[1] = 0x13;
+            queue_phase(s, T30_PHASE_D_TX);
+            frame[0] = ADDRESS_FIELD;
+            frame[1] = CONTROL_FIELD_FINAL_FRAME;
             frame[2] = (uint8_t) (T30_EOR | s->dis_received);
             frame[3] = (s->ecm_at_page_end)  ?  ((uint8_t) (s->next_tx_step | s->dis_received))  :  T30_NULL;
             span_log(&s->logging, SPAN_LOG_FLOW, "Sending EOR + %s\n", t30_frametype(frame[3]));
@@ -2234,48 +2526,6 @@ static void process_rx_ppr(t30_state_t *s, const uint8_t *msg, int len)
     }
     else
     {
-        if (len != 3 + 32)
-        {
-            span_log(&s->logging, SPAN_LOG_FLOW, "Bad length for PPR bits - %d\n", len);
-            /* TODO: probably should send DCN */
-            return;
-        }
-        /* Check which frames are OK, and mark them as OK. */
-        for (i = 0;  i < 32;  i++)
-        {
-            if (msg[i + 3] == 0)
-            {
-                /* A chunk of 8 frames is OK */
-                s->ecm_frame_map[i + 3] = 0;
-                for (j = 0;  j < 8;  j++)
-                    s->ecm_len[(i << 3) + j] = -1;
-            }
-            else
-            {
-                /* We need to sift through a chunk of 8 frames to find the good and bad */
-                mask = 1;
-                for (j = 0;  j < 8;  j++)
-                {
-                    frame_no = (i << 3) + j;
-                    /* Tick off the frames they are not complaining about as OK */
-                    if ((msg[i + 3] & mask) == 0)
-                    {
-                        s->ecm_len[frame_no] = -1;
-                    }
-                    else
-                    {
-                        if (frame_no < s->ecm_frames)
-                            span_log(&s->logging, SPAN_LOG_FLOW, "Frame %d to be resent\n", frame_no);
-#if 0
-                        /* Diagnostic: See if the other end is complaining about something we didn't even send this time. */
-                        if (s->ecm_len[frame_no] < 0)
-                            span_log(&s->logging, SPAN_LOG_FLOW, "PPR contains complaint about frame %d, which was not sent\n", frame_no);
-#endif
-                    }
-                    mask <<= 1;
-                }
-            }
-        }
         /* Initiate resending of the remainder of the frames. */
         set_state(s, T30_STATE_IV);
         queue_phase(s, T30_PHASE_C_ECM_TX);
@@ -2306,6 +2556,9 @@ static void process_rx_fcd(t30_state_t *s, const uint8_t *msg, int len)
         {
             unexpected_frame_length(s, msg, len);
         }
+        /* We have received something, so any missing carrier status is out of date */
+        if (s->current_status == T30_ERR_RX_NOCARRIER)
+            s->current_status = T30_ERR_OK;
         break;
     default:
         unexpected_non_final_frame(s, msg, len);
@@ -2316,16 +2569,21 @@ static void process_rx_fcd(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_rx_rcp(t30_state_t *s, const uint8_t *msg, int len)
 {
-    /* Return to control for partial page. These might come through with or without the final frame tag,
-       so we have this routine to deal with the "no final frame tag" case. */
+    /* Return to control for partial page. These might come through with or without the final frame tag.
+       Here we deal with the "no final frame tag" case. */
     switch (s->state)
     {
     case T30_STATE_F_DOC_ECM:
         set_state(s, T30_STATE_F_POST_DOC_ECM);
         queue_phase(s, T30_PHASE_D_RX);
+        timer_t2_start(s);
+        /* We have received something, so any missing carrier status is out of date */
+        if (s->current_status == T30_ERR_RX_NOCARRIER)
+            s->current_status = T30_ERR_OK;
         break;
     case T30_STATE_F_POST_DOC_ECM:
-        /* Just ignore this */
+        /* Just ignore this. It must be an extra RCP. Several are usually sent, to maximise the chance
+           of receiving a correct one. */
         break;
     default:
         unexpected_non_final_frame(s, msg, len);
@@ -2350,7 +2608,7 @@ static void process_rx_fnv(t30_state_t *s, const uint8_t *msg, int len)
     if ((msg[3] & 0x02))
         span_log(log, SPAN_LOG_FLOW, "  Selective polling reference (SEP) not known.\n");
     if ((msg[3] & 0x04))
-        span_log(log, SPAN_LOG_FLOW, "  Subaddress (SUB) not known.\n");
+        span_log(log, SPAN_LOG_FLOW, "  Sub-address (SUB) not known.\n");
     if ((msg[3] & 0x08))
         span_log(log, SPAN_LOG_FLOW, "  Sender identity (SID) not known.\n");
     if ((msg[3] & 0x10))
@@ -2358,7 +2616,7 @@ static void process_rx_fnv(t30_state_t *s, const uint8_t *msg, int len)
     if ((msg[3] & 0x20))
         span_log(log, SPAN_LOG_FLOW, "  Transmitting subscriber identity (TSI) not accepted.\n");
     if ((msg[3] & 0x40))
-        span_log(log, SPAN_LOG_FLOW, "  Polled subaddress (PSA) not known.\n");
+        span_log(log, SPAN_LOG_FLOW, "  Polled sub-address (PSA) not known.\n");
     if (len > 4  &&  (msg[3] & DISBIT8))
     {
         if ((msg[4] & 0x01))
@@ -2376,29 +2634,29 @@ static void process_rx_fnv(t30_state_t *s, const uint8_t *msg, int len)
     {
         switch (msg[6])
         {
-        case 0x83:
+        case T30_PWD:
             x = "Incorrect password (PWD)";
             break;
-        case 0x85:
+        case T30_SEP:
             x = "Selective polling reference (SEP) not known";
             break;
-        case 0x43:
-        case 0xC3:
-            x = "Subaddress (SUB) not known";
+        case T30_SUB:
+        case T30_SUB | 0x01:
+            x = "Sub-address (SUB) not known";
             break;
-        case 0x45:
-        case 0xC5:
+        case T30_SID:
+        case T30_SID | 0x01:
             x = "Sender identity (SID) not known";
             break;
-        case 0x10:
+        case T30_SPI:
             x = "Secure fax error";
             break;
-        case 0x42:
-        case 0xC2:
+        case T30_TSI:
+        case T30_TSI | 0x01:
             x = "Transmitting subscriber identity (TSI) not accepted";
             break;
-        case 0x86:
-            x = "Polled subaddress (PSA) not known";
+        case T30_PSA:
+            x = "Polled sub-address (PSA) not known";
             break;
         default:
             x = "???";
@@ -2417,7 +2675,11 @@ static void process_rx_fnv(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_answering(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    /* We should be sending the TCF data right now */
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DIS:
         /* TODO: This is a fudge to allow for starting up in T.38, where the other end has
@@ -2431,12 +2693,10 @@ static void process_state_answering(t30_state_t *s, const uint8_t *msg, int len)
            seen DIS by analogue modem means, and has immediately sent DCS. We might have
            missed useful info, like TSI, but just accept things and carry on form now. */
         span_log(&s->logging, SPAN_LOG_FLOW, "DCS before DIS\n");
-        /* (TSI) DCS */
-        /* (PWD) (SUB) (TSI) DCS */
         process_rx_dcs(s, msg, len);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_GOTDCNTX;
+        s->current_status = T30_ERR_TX_GOTDCN;
         disconnect(s);
         break;
     default:
@@ -2449,7 +2709,10 @@ static void process_state_answering(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_b(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DCN:
         /* Just ignore any DCN's which appear at this stage. */
@@ -2470,7 +2733,10 @@ static void process_state_b(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_c(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DCN:
         /* Just ignore any DCN's which appear at this stage. */
@@ -2491,11 +2757,14 @@ static void process_state_c(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_d(t30_state_t *s, const uint8_t *msg, int len)
 {
+    uint8_t fcf;
+
     /* We should be sending the DCS sequence right now */
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DCN:
-        s->current_status = T30_ERR_BADDCSTX;
+        s->current_status = T30_ERR_TX_BADDCS;
         disconnect(s);
         break;
     case T30_CRP:
@@ -2514,11 +2783,14 @@ static void process_state_d(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_d_tcf(t30_state_t *s, const uint8_t *msg, int len)
 {
+    uint8_t fcf;
+
     /* We should be sending the TCF data right now */
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DCN:
-        s->current_status = T30_ERR_BADDCSTX;
+        s->current_status = T30_ERR_TX_BADDCS;
         disconnect(s);
         break;
     case T30_CRP:
@@ -2537,7 +2809,10 @@ static void process_state_d_tcf(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_d_post_tcf(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CFR:
         /* Trainability test succeeded. Send the document. */
@@ -2570,22 +2845,24 @@ static void process_state_d_post_tcf(t30_state_t *s, const uint8_t *msg, int len
             break;
         }
         queue_phase(s, T30_PHASE_B_TX);
-        send_dcs_sequence(s);
+        send_dcs_sequence(s, TRUE);
         break;
     case T30_DIS:
         /* It appears they didn't see what we sent - retry the TCF */
-        if (++s->retries > MAX_MESSAGE_TRIES)
+        if (++s->retries >= MAX_COMMAND_TRIES)
         {
+            span_log(&s->logging, SPAN_LOG_FLOW, "Too many retries. Giving up.\n");
             s->current_status = T30_ERR_RETRYDCN;
             send_dcn(s);
             break;
         }
+        span_log(&s->logging, SPAN_LOG_FLOW, "Retry number %d\n", s->retries);
         queue_phase(s, T30_PHASE_B_TX);
-        /* TODO: should be reassess the new DIS message, and possibly adjust the DCS we use? */
-        send_dcs_sequence(s);
+        /* TODO: should we reassess the new DIS message, and possibly adjust the DCS we use? */
+        send_dcs_sequence(s, TRUE);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_BADDCSTX;
+        s->current_status = T30_ERR_TX_BADDCS;
         disconnect(s);
         break;
     case T30_CRP:
@@ -2604,8 +2881,11 @@ static void process_state_d_post_tcf(t30_state_t *s, const uint8_t *msg, int len
 
 static void process_state_f_tcf(t30_state_t *s, const uint8_t *msg, int len)
 {
+    uint8_t fcf;
+
     /* We should be receiving TCF right now, not HDLC messages */
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CRP:
         repeat_last_command(s);
@@ -2623,9 +2903,16 @@ static void process_state_f_tcf(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_f_cfr(t30_state_t *s, const uint8_t *msg, int len)
 {
+    uint8_t fcf;
+
     /* We're waiting for a response to the CFR we sent */
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
+    case T30_DCS:
+        /* If we received another DCS, they must have missed our CFR */
+        process_rx_dcs(s, msg, len);
+        break;
     case T30_CRP:
         repeat_last_command(s);
         break;
@@ -2642,9 +2929,15 @@ static void process_state_f_cfr(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_f_ftt(t30_state_t *s, const uint8_t *msg, int len)
 {
+    uint8_t fcf;
+
     /* We're waiting for a response to the FTT we sent */
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
+    case T30_DCS:
+        process_rx_dcs(s, msg, len);
+        break;
     case T30_CRP:
         repeat_last_command(s);
         break;
@@ -2661,23 +2954,27 @@ static void process_state_f_ftt(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int len)
 {
+    uint8_t fcf;
+
     /* If we are getting HDLC messages, and we have not moved to the _POST_DOC_NON_ECM
-       state, it looks like we didn't see the image data carrier properly. */
-    switch (msg[2] & 0xFE)
+       state, it looks like either:
+        - we didn't see the image data carrier properly, or
+        - they didn't see our T30_CFR, and are repeating the DCS/TCF sequence.
+        - they didn't see out T30_MCF, and are repeating the end of page message. */
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DIS:
         process_rx_dis_dtc(s, msg, len);
         break;
     case T30_DCS:
-        /* (TSI) DCS */
-        /* (PWD) (SUB) (TSI) DCS */
         process_rx_dcs(s, msg, len);
         break;
     case T30_MPS:
         /* Treat this as a bad quality page. */
         if (s->phase_d_handler)
-            s->phase_d_handler(s, s->phase_d_user_data, T30_MPS);
-        s->next_rx_step = T30_MPS;
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
+        s->next_rx_step = msg[2] & 0xFE;
         queue_phase(s, T30_PHASE_D_TX);
         set_state(s, T30_STATE_III_Q_RTN);
         send_simple_frame(s, T30_RTN);
@@ -2686,17 +2983,18 @@ static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int 
         /* Treat this as a bad quality page. */
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PRI_MPS);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
-        s->next_rx_step = T30_PRI_MPS;
+        s->next_rx_step = msg[2] & 0xFE;
         set_state(s, T30_STATE_III_Q_RTN);
         break;
     case T30_EOM:
+    case T30_EOS:
         /* Treat this as a bad quality page. */
         if (s->phase_d_handler)
-            s->phase_d_handler(s, s->phase_d_user_data, T30_EOM);
-        s->next_rx_step = T30_EOM;
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
+        s->next_rx_step = msg[2] & 0xFE;
         /* Return to phase B */
         queue_phase(s, T30_PHASE_B_TX);
         set_state(s, T30_STATE_III_Q_RTN);
@@ -2706,7 +3004,7 @@ static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int 
         /* Treat this as a bad quality page. */
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PRI_EOM);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         s->next_rx_step = T30_PRI_EOM;
@@ -2715,8 +3013,8 @@ static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int 
     case T30_EOP:
         /* Treat this as a bad quality page. */
         if (s->phase_d_handler)
-            s->phase_d_handler(s, s->phase_d_user_data, T30_EOP);
-        s->next_rx_step = T30_EOP;
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
+        s->next_rx_step = msg[2] & 0xFE;
         queue_phase(s, T30_PHASE_D_TX);
         set_state(s, T30_STATE_III_Q_RTN);
         send_simple_frame(s, T30_RTN);
@@ -2725,14 +3023,14 @@ static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int 
         /* Treat this as a bad quality page. */
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PRI_EOP);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
-        s->next_rx_step = T30_PRI_EOP;
+        s->next_rx_step = msg[2] & 0xFE;
         set_state(s, T30_STATE_III_Q_RTN);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_DCNDATARX;
+        s->current_status = T30_ERR_RX_DCNDATA;
         disconnect(s);
         break;
     case T30_CRP:
@@ -2743,6 +3041,7 @@ static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int 
         break;
     default:
         /* We don't know what to do with this. */
+        s->current_status = T30_ERR_RX_INVALCMD;
         unexpected_final_frame(s, msg, len);
         break;
     }
@@ -2751,23 +3050,27 @@ static void process_state_f_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int 
 
 static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_MPS:
         if (s->phase_d_handler)
-            s->phase_d_handler(s, s->phase_d_user_data, msg[2] & 0xFE);
-        s->next_rx_step = T30_MPS;
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
+        s->next_rx_step = fcf;
         queue_phase(s, T30_PHASE_D_TX);
         switch (copy_quality(s))
         {
+        case T30_COPY_QUALITY_PERFECT:
         case T30_COPY_QUALITY_GOOD:
-            t4_rx_end_page(&(s->t4));
+            rx_end_page(s);
             rx_start_page(s);
             set_state(s, T30_STATE_III_Q_MCF);
             send_simple_frame(s, T30_MCF);
             break;
         case T30_COPY_QUALITY_POOR:
-            t4_rx_end_page(&(s->t4));
+            rx_end_page(s);
             rx_start_page(s);
             set_state(s, T30_STATE_III_Q_RTP);
             send_simple_frame(s, T30_RTP);
@@ -2782,21 +3085,24 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
     case T30_PRI_MPS:
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PRI_MPS);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
-        s->next_rx_step = T30_PRI_MPS;
+        s->next_rx_step = fcf;
         switch (copy_quality(s))
         {
+        case T30_COPY_QUALITY_PERFECT:
         case T30_COPY_QUALITY_GOOD:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_MCF);
             break;
         case T30_COPY_QUALITY_POOR:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_RTP);
             break;
@@ -2806,21 +3112,23 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
         }
         break;
     case T30_EOM:
+    case T30_EOS:
         if (s->phase_d_handler)
-            s->phase_d_handler(s, s->phase_d_user_data, msg[2] & 0xFE);
-        s->next_rx_step = T30_EOM;
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
+        s->next_rx_step = fcf;
         /* Return to phase B */
         queue_phase(s, T30_PHASE_B_TX);
         switch (copy_quality(s))
         {
+        case T30_COPY_QUALITY_PERFECT:
         case T30_COPY_QUALITY_GOOD:
-            t4_rx_end_page(&(s->t4));
+            rx_end_page(s);
             rx_start_page(s);
             set_state(s, T30_STATE_III_Q_MCF);
             send_simple_frame(s, T30_MCF);
             break;
         case T30_COPY_QUALITY_POOR:
-            t4_rx_end_page(&(s->t4));
+            rx_end_page(s);
             rx_start_page(s);
             set_state(s, T30_STATE_III_Q_RTP);
             send_simple_frame(s, T30_RTP);
@@ -2835,21 +3143,24 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
     case T30_PRI_EOM:
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PRI_EOM);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
-        s->next_rx_step = T30_PRI_EOM;
+        s->next_rx_step = fcf;
         switch (copy_quality(s))
         {
+        case T30_COPY_QUALITY_PERFECT:
         case T30_COPY_QUALITY_GOOD:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_MCF);
             break;
         case T30_COPY_QUALITY_POOR:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_RTP);
             break;
@@ -2860,21 +3171,24 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
         break;
     case T30_EOP:
         if (s->phase_d_handler)
-            s->phase_d_handler(s, s->phase_d_user_data, msg[2] & 0xFE);
-        s->next_rx_step = T30_EOP;
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
+        s->next_rx_step = fcf;
         queue_phase(s, T30_PHASE_D_TX);
         switch (copy_quality(s))
         {
+        case T30_COPY_QUALITY_PERFECT:
         case T30_COPY_QUALITY_GOOD:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_MCF);
             send_simple_frame(s, T30_MCF);
             break;
         case T30_COPY_QUALITY_POOR:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_RTP);
             send_simple_frame(s, T30_RTP);
@@ -2888,21 +3202,24 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
     case T30_PRI_EOP:
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PRI_EOP);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
-        s->next_rx_step = T30_PRI_EOP;
+        s->next_rx_step = fcf;
         switch (copy_quality(s))
         {
+        case T30_COPY_QUALITY_PERFECT:
         case T30_COPY_QUALITY_GOOD:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_MCF);
             break;
         case T30_COPY_QUALITY_POOR:
-            t4_rx_end_page(&(s->t4));
-            t4_rx_end(&(s->t4));
+            rx_end_page(s);
+            t4_rx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             s->in_message = FALSE;
             set_state(s, T30_STATE_III_Q_RTP);
             break;
@@ -2912,7 +3229,7 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
         }
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_DCNFAXRX;
+        s->current_status = T30_ERR_RX_DCNFAX;
         disconnect(s);
         break;
     case T30_CRP:
@@ -2923,38 +3240,45 @@ static void process_state_f_post_doc_non_ecm(t30_state_t *s, const uint8_t *msg,
         break;
     default:
         /* We don't know what to do with this. */
+        s->current_status = T30_ERR_RX_INVALCMD;
         unexpected_final_frame(s, msg, len);
         break;
     }
 }
 /*- End of function --------------------------------------------------------*/
 
-static void process_state_f_doc_ecm(t30_state_t *s, const uint8_t *msg, int len)
+static void process_state_f_doc_and_post_doc_ecm(t30_state_t *s, const uint8_t *msg, int len)
 {
-    int fcf2;
+    uint8_t fcf;
+    uint8_t fcf2;
     
     /* This actually handles 2 states - _DOC_ECM and _POST_DOC_ECM - as they are very similar */
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DIS:
         process_rx_dis_dtc(s, msg, len);
         break;
     case T30_DCS:
-        /* (TSI) DCS */
-        /* (PWD) (SUB) (TSI) DCS */
         process_rx_dcs(s, msg, len);
         break;
     case T4_RCP:
+        /* Return to control for partial page. These might come through with or without the final frame tag.
+           Here we deal with the "final frame tag" case. */
         if (s->state == T30_STATE_F_DOC_ECM)
         {
             /* Return to control for partial page */
             set_state(s, T30_STATE_F_POST_DOC_ECM);
             queue_phase(s, T30_PHASE_D_RX);
+            timer_t2_start(s);
+            /* We have received something, so any missing carrier status is out of date */
+            if (s->current_status == T30_ERR_RX_NOCARRIER)
+                s->current_status = T30_ERR_OK;
         }
         else
         {
-            /* Ignore extra RCP frames. The source will usually send several to maximise the chance of
-               one getting through OK. */
+            /* Just ignore this. It must be an extra RCP. Several are usually sent, to maximise the chance
+               of receiving a correct one. */
         }
         break;
     case T30_EOR:
@@ -2967,17 +3291,19 @@ static void process_state_f_doc_ecm(t30_state_t *s, const uint8_t *msg, int len)
         span_log(&s->logging, SPAN_LOG_FLOW, "Received EOR + %s\n", t30_frametype(msg[3]));
         switch (fcf2)
         {
-        case T30_NULL:
-            break;
+        case T30_PRI_EOP:
         case T30_PRI_EOM:
         case T30_PRI_MPS:
-        case T30_PRI_EOP:
             /* TODO: Alert operator */
             /* Fall through */
-        case T30_EOM:
-        case T30_MPS:
+        case T30_NULL:
         case T30_EOP:
+        case T30_EOM:
+        case T30_EOS:
+        case T30_MPS:
             s->next_rx_step = fcf2;
+            queue_phase(s, T30_PHASE_D_TX);
+            set_state(s, T30_STATE_F_DOC_ECM);
             send_simple_frame(s, T30_ERR);
             break;
         default:
@@ -2989,14 +3315,16 @@ static void process_state_f_doc_ecm(t30_state_t *s, const uint8_t *msg, int len)
         process_rx_pps(s, msg, len);
         break;
     case T30_CTC:
-        send_simple_frame(s, T30_CTR);
         /* T.30 says we change back to long training here */
         s->short_train = FALSE;
+        queue_phase(s, T30_PHASE_D_TX);
+        set_state(s, T30_STATE_F_DOC_ECM);
+        send_simple_frame(s, T30_CTR);
         break;
     case T30_RR:
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_DCNDATARX;
+        s->current_status = T30_ERR_RX_DCNDATA;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3007,6 +3335,7 @@ static void process_state_f_doc_ecm(t30_state_t *s, const uint8_t *msg, int len)
         break;
     default:
         /* We don't know what to do with this. */
+        s->current_status = T30_ERR_RX_INVALCMD;
         unexpected_final_frame(s, msg, len);
         break;
     }
@@ -3015,13 +3344,19 @@ static void process_state_f_doc_ecm(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_f_post_rcp_mcf(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CRP:
         repeat_last_command(s);
         break;
     case T30_FNV:
         process_rx_fnv(s, msg, len);
+        break;
+    case T30_DCN:
+        disconnect(s);
         break;
     default:
         /* We don't know what to do with this. */
@@ -3033,7 +3368,10 @@ static void process_state_f_post_rcp_mcf(t30_state_t *s, const uint8_t *msg, int
 
 static void process_state_f_post_rcp_ppr(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CRP:
         repeat_last_command(s);
@@ -3051,7 +3389,10 @@ static void process_state_f_post_rcp_ppr(t30_state_t *s, const uint8_t *msg, int
 
 static void process_state_f_post_rcp_rnr(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_RR:
         if (s->receiver_not_ready_count > 0)
@@ -3082,19 +3423,20 @@ static void process_state_f_post_rcp_rnr(t30_state_t *s, const uint8_t *msg, int
 
 static void process_state_r(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DIS:
         process_rx_dis_dtc(s, msg, len);
         break;
     case T30_DCS:
-        /* (TSI) DCS */
-        /* (PWD) (SUB) (TSI) DCS */
         process_rx_dcs(s, msg, len);
         break;
     case T30_DCN:
         /* Received a DCN while waiting for a DIS */
-        s->current_status = T30_ERR_GOTDCNTX;
+        s->current_status = T30_ERR_TX_GOTDCN;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3113,13 +3455,16 @@ static void process_state_r(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_t(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_DIS:
         process_rx_dis_dtc(s, msg, len);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_DCNWHYRX;
+        s->current_status = T30_ERR_RX_DCNWHY;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3131,7 +3476,7 @@ static void process_state_t(t30_state_t *s, const uint8_t *msg, int len)
     default:
         /* We don't know what to do with this. */
         unexpected_final_frame(s, msg, len);
-        s->current_status = T30_ERR_NODISTX;
+        s->current_status = T30_ERR_TX_NODIS;
         break;
     }
 }
@@ -3139,7 +3484,10 @@ static void process_state_t(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_i(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CRP:
         repeat_last_command(s);
@@ -3157,7 +3505,10 @@ static void process_state_i(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_ii(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CRP:
         repeat_last_command(s);
@@ -3176,19 +3527,21 @@ static void process_state_ii(t30_state_t *s, const uint8_t *msg, int len)
 static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
 {
     t4_stats_t stats;
+    uint8_t fcf;
 
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_MCF:
         switch (s->next_tx_step)
         {
         case T30_MPS:
         case T30_PRI_MPS:
-            s->retries = 0;
-            t4_tx_end_page(&(s->t4));
+            tx_end_page(s);
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-            if (t4_tx_start_page(&(s->t4)))
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+            /* Transmit the next page */
+            if (tx_start_page(s))
             {
                 /* TODO: recover */
                 break;
@@ -3198,85 +3551,159 @@ static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
             break;
         case T30_EOM:
         case T30_PRI_EOM:
-            s->retries = 0;
-            t4_tx_end_page(&(s->t4));
+        case T30_EOS:
+            tx_end_page(s);
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-            t4_tx_end(&(s->t4));
-            set_state(s, T30_STATE_R);
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+            t4_tx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             if (span_log_test(&s->logging, SPAN_LOG_FLOW))
             {
-                t4_get_transfer_statistics(&(s->t4), &stats);
+                t4_get_transfer_statistics(&s->t4, &stats);
                 span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
             }
+            return_to_phase_b(s, FALSE);
             break;
         case T30_EOP:
         case T30_PRI_EOP:
-            s->retries = 0;
-            t4_tx_end_page(&(s->t4));
+            tx_end_page(s);
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-            t4_tx_end(&(s->t4));
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+            t4_tx_release(&s->t4);
+            s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
             send_dcn(s);
             if (span_log_test(&s->logging, SPAN_LOG_FLOW))
             {
-                t4_get_transfer_statistics(&(s->t4), &stats);
+                t4_get_transfer_statistics(&s->t4, &stats);
                 span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
             }
             break;
         }
         break;
     case T30_RTP:
+#if 0
+        s->rtp_events++;
+#endif
         switch (s->next_tx_step)
         {
         case T30_MPS:
         case T30_PRI_MPS:
-            s->retries = 0;
+            tx_end_page(s);
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_RTP);
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+            if (tx_start_page(s))
+            {
+                /* TODO: recover */
+                break;
+            }
             /* Send fresh training, and then the next page */
+            if (step_fallback_entry(s) < 0)
+            {
+                /* We have fallen back as far as we can go. Give up. */
+                s->current_fallback = 0;
+                s->current_status = T30_ERR_CANNOT_TRAIN;
+                send_dcn(s);
+                break;
+            }
             queue_phase(s, T30_PHASE_B_TX);
             restart_sending_document(s);
             break;
         case T30_EOM:
         case T30_PRI_EOM:
-            s->retries = 0;
+        case T30_EOS:
+            tx_end_page(s);
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_RTP);
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+            t4_tx_release(&s->t4);
             /* TODO: should go back to T, and resend */
-            set_state(s, T30_STATE_R);
+            return_to_phase_b(s, TRUE);
             break;
         case T30_EOP:
         case T30_PRI_EOP:
-            s->retries = 0;
+            tx_end_page(s);
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_RTN);
-            s->current_status = T30_ERR_INVALRSPTX;
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+            t4_tx_release(&s->t4);
             send_dcn(s);
             break;
         }
         break;
     case T30_RTN:
+#if 0
+        s->rtn_events++;
+#endif
         switch (s->next_tx_step)
         {
         case T30_MPS:
         case T30_PRI_MPS:
             s->retries = 0;
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_RTN);
-            /* Send fresh training, and then repeat the last page */
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+#if 0
+            if (!s->retransmit_capable)
+#endif
+            {
+                /* Send the next page, regardless of the problem with the current one. */
+                if (tx_start_page(s))
+                {
+                    /* TODO: recover */
+                    break;
+                }
+            }
+            /* Send fresh training */
+            if (step_fallback_entry(s) < 0)
+            {
+                /* We have fallen back as far as we can go. Give up. */
+                s->current_fallback = 0;
+                s->current_status = T30_ERR_CANNOT_TRAIN;
+                send_dcn(s);
+                break;
+            }
             queue_phase(s, T30_PHASE_B_TX);
             restart_sending_document(s);
             break;
         case T30_EOM:
         case T30_PRI_EOM:
+        case T30_EOS:
+            s->retries = 0;
+            if (s->phase_d_handler)
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+#if 0
+            if (s->retransmit_capable)
+            {
+                /* Wait for DIS */
+            }
+            else
+#endif
+            {
+                return_to_phase_b(s, TRUE);
+            }
+            break;
         case T30_EOP:
         case T30_PRI_EOP:
             s->retries = 0;
             if (s->phase_d_handler)
-                s->phase_d_handler(s, s->phase_d_user_data, T30_RTN);
-            s->current_status = T30_ERR_INVALRSPTX;
-            send_dcn(s);
+                s->phase_d_handler(s, s->phase_d_user_data, fcf);
+#if 0
+            if (s->retransmit_capable)
+            {
+                /* Send fresh training, and then repeat the last page */
+                if (step_fallback_entry(s) < 0)
+                {
+                    /* We have fallen back as far as we can go. Give up. */
+                    s->current_fallback = 0;
+                    s->current_status = T30_ERR_CANNOT_TRAIN;
+                    send_dcn(s);
+                    break;
+                }
+                queue_phase(s, T30_PHASE_B_TX);
+                restart_sending_document(s);
+            }
+            else
+#endif
+            {
+                send_dcn(s);
+            }
             break;
         }
         break;
@@ -3284,7 +3711,7 @@ static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIP);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3292,7 +3719,7 @@ static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIN);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3303,11 +3730,12 @@ static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
         case T30_PRI_MPS:
         case T30_EOM:
         case T30_PRI_EOM:
-            /* Unexpected DCN after EOM or MPS sequence */
-            s->current_status = T30_ERR_DCNPHDRX;
+        case T30_EOS:
+            /* Unexpected DCN after EOM, EOS or MPS sequence */
+            s->current_status = T30_ERR_RX_DCNPHD;
             break;
         default:
-            s->current_status = T30_ERR_BADPGTX;
+            s->current_status = T30_ERR_TX_BADPG;
             break;
         }
         disconnect(s);
@@ -3320,6 +3748,7 @@ static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
         break;
     default:
         /* We don't know what to do with this. */
+        s->current_status = T30_ERR_TX_INVALRSP;
         unexpected_final_frame(s, msg, len);
         break;
     }
@@ -3328,19 +3757,32 @@ static void process_state_ii_q(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_iii_q_mcf(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
-    case T30_MPS:
-    case T30_EOM:
     case T30_EOP:
+    case T30_EOM:
+    case T30_EOS:
+    case T30_MPS:
         /* Looks like they didn't see our signal. Repeat it */
+        queue_phase(s, T30_PHASE_D_TX);
+        set_state(s, T30_STATE_III_Q_MCF);
         send_simple_frame(s, T30_MCF);
+        break;
+    case T30_DIS:
+        if (msg[2] == T30_DTC)
+            process_rx_dis_dtc(s, msg, len);
         break;
     case T30_CRP:
         repeat_last_command(s);
         break;
     case T30_FNV:
         process_rx_fnv(s, msg, len);
+        break;
+    case T30_DCN:
+        disconnect(s);
         break;
     default:
         /* We don't know what to do with this. */
@@ -3352,13 +3794,23 @@ static void process_state_iii_q_mcf(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_iii_q_rtp(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
-    case T30_MPS:
-    case T30_EOM:
     case T30_EOP:
+    case T30_EOM:
+    case T30_EOS:
+    case T30_MPS:
         /* Looks like they didn't see our signal. Repeat it */
+        queue_phase(s, T30_PHASE_D_TX);
+        set_state(s, T30_STATE_III_Q_RTP);
         send_simple_frame(s, T30_RTP);
+        break;
+    case T30_DIS:
+        if (msg[2] == T30_DTC)
+            process_rx_dis_dtc(s, msg, len);
         break;
     case T30_CRP:
         repeat_last_command(s);
@@ -3376,23 +3828,33 @@ static void process_state_iii_q_rtp(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_iii_q_rtn(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
-    case T30_MPS:
-    case T30_EOM:
     case T30_EOP:
+    case T30_EOM:
+    case T30_EOS:
+    case T30_MPS:
         /* Looks like they didn't see our signal. Repeat it */
+        queue_phase(s, T30_PHASE_D_TX);
+        set_state(s, T30_STATE_III_Q_RTN);
         send_simple_frame(s, T30_RTN);
         break;
-    case T30_DCN:
-        s->current_status = T30_ERR_DCNNORTNRX;
-        disconnect(s);
+    case T30_DIS:
+        if (msg[2] == T30_DTC)
+            process_rx_dis_dtc(s, msg, len);
         break;
     case T30_CRP:
         repeat_last_command(s);
         break;
     case T30_FNV:
         process_rx_fnv(s, msg, len);
+        break;
+    case T30_DCN:
+        s->current_status = T30_ERR_RX_DCNNORTN;
+        disconnect(s);
         break;
     default:
         /* We don't know what to do with this. */
@@ -3404,7 +3866,10 @@ static void process_state_iii_q_rtn(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_iv(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CRP:
         repeat_last_command(s);
@@ -3423,8 +3888,10 @@ static void process_state_iv(t30_state_t *s, const uint8_t *msg, int len)
 static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int len)
 {
     t4_stats_t stats;
+    uint8_t fcf;
 
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_MCF:
         s->retries = 0;
@@ -3433,7 +3900,7 @@ static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int le
         span_log(&s->logging, SPAN_LOG_FLOW, "Is there more to send? - %d %d\n", s->ecm_frames, s->ecm_len[255]);
         if (!s->ecm_at_page_end  &&  get_partial_ecm_page(s) > 0)
         {
-            span_log(&s->logging, SPAN_LOG_WARNING, "Additional image data to send\n");
+            span_log(&s->logging, SPAN_LOG_FLOW, "Additional image data to send\n");
             s->ecm_block++;
             set_state(s, T30_STATE_IV);
             queue_phase(s, T30_PHASE_C_ECM_TX);
@@ -3446,17 +3913,14 @@ static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int le
             {
             case T30_MPS:
             case T30_PRI_MPS:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                if (t4_tx_start_page(&(s->t4)))
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                if (tx_start_page(s))
                 {
                     /* TODO: recover */
                     break;
                 }
-                s->ecm_page++;
-                s->ecm_block = 0;
                 if (get_partial_ecm_page(s) > 0)
                 {
                     set_state(s, T30_STATE_IV);
@@ -3466,29 +3930,30 @@ static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int le
                 break;
             case T30_EOM:
             case T30_PRI_EOM:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+            case T30_EOS:
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                t4_tx_end(&(s->t4));
-                set_state(s, T30_STATE_R);
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                t4_tx_release(&s->t4);
+                s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
                 if (span_log_test(&s->logging, SPAN_LOG_FLOW))
                 {
-                    t4_get_transfer_statistics(&(s->t4), &stats);
+                    t4_get_transfer_statistics(&s->t4, &stats);
                     span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
                 }
+                return_to_phase_b(s, FALSE);
                 break;
             case T30_EOP:
             case T30_PRI_EOP:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                t4_tx_end(&(s->t4));
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                t4_tx_release(&s->t4);
+                s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
                 send_dcn(s);
                 if (span_log_test(&s->logging, SPAN_LOG_FLOW))
                 {
-                    t4_get_transfer_statistics(&(s->t4), &stats);
+                    t4_get_transfer_statistics(&s->t4, &stats);
                     span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
                 }
                 break;
@@ -3501,12 +3966,12 @@ static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int le
     case T30_RNR:
         if (s->timer_t5 == 0)
             s->timer_t5 = ms_to_samples(DEFAULT_TIMER_T5);
-        set_state(s, T30_STATE_IV_PPS_RNR);
         queue_phase(s, T30_PHASE_D_TX);
-        send_simple_frame(s, T30_RR);
+        set_state(s, T30_STATE_IV_PPS_RNR);
+        send_rr(s);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_BADPGTX;
+        s->current_status = T30_ERR_TX_BADPG;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3518,7 +3983,7 @@ static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int le
     default:
         /* We don't know what to do with this. */
         unexpected_final_frame(s, msg, len);
-        s->current_status = T30_ERR_ECMPHDTX;
+        s->current_status = T30_ERR_TX_ECMPHD;
         break;
     }
 }
@@ -3527,8 +3992,10 @@ static void process_state_iv_pps_null(t30_state_t *s, const uint8_t *msg, int le
 static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
 {
     t4_stats_t stats;
+    uint8_t fcf;
 
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_MCF:
         s->retries = 0;
@@ -3537,7 +4004,7 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
         span_log(&s->logging, SPAN_LOG_FLOW, "Is there more to send? - %d %d\n", s->ecm_frames, s->ecm_len[255]);
         if (!s->ecm_at_page_end  &&  get_partial_ecm_page(s) > 0)
         {
-            span_log(&s->logging, SPAN_LOG_WARNING, "Additional image data to send\n");
+            span_log(&s->logging, SPAN_LOG_FLOW, "Additional image data to send\n");
             s->ecm_block++;
             set_state(s, T30_STATE_IV);
             queue_phase(s, T30_PHASE_C_ECM_TX);
@@ -3545,23 +4012,19 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
         }
         else
         {
-
             span_log(&s->logging, SPAN_LOG_FLOW, "Moving on to the next page\n");
             switch (s->next_tx_step)
             {
             case T30_MPS:
             case T30_PRI_MPS:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                if (t4_tx_start_page(&(s->t4)))
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                if (tx_start_page(s))
                 {
                     /* TODO: recover */
                     break;
                 }
-                s->ecm_page++;
-                s->ecm_block = 0;
                 if (get_partial_ecm_page(s) > 0)
                 {
                     set_state(s, T30_STATE_IV);
@@ -3571,29 +4034,30 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
                 break;
             case T30_EOM:
             case T30_PRI_EOM:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+            case T30_EOS:
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                t4_tx_end(&(s->t4));
-                set_state(s, T30_STATE_R);
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                t4_tx_release(&s->t4);
+                s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
                 if (span_log_test(&s->logging, SPAN_LOG_FLOW))
                 {
-                    t4_get_transfer_statistics(&(s->t4), &stats);
+                    t4_get_transfer_statistics(&s->t4, &stats);
                     span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
                 }
+                return_to_phase_b(s, FALSE);
                 break;
             case T30_EOP:
             case T30_PRI_EOP:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                t4_tx_end(&(s->t4));
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                t4_tx_release(&s->t4);
+                s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
                 send_dcn(s);
                 if (span_log_test(&s->logging, SPAN_LOG_FLOW))
                 {
-                    t4_get_transfer_statistics(&(s->t4), &stats);
+                    t4_get_transfer_statistics(&s->t4, &stats);
                     span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
                 }
                 break;
@@ -3603,15 +4067,15 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
     case T30_RNR:
         if (s->timer_t5 == 0)
             s->timer_t5 = ms_to_samples(DEFAULT_TIMER_T5);
-        set_state(s, T30_STATE_IV_PPS_RNR);
         queue_phase(s, T30_PHASE_D_TX);
-        send_simple_frame(s, T30_RR);
+        set_state(s, T30_STATE_IV_PPS_RNR);
+        send_rr(s);
         break;
     case T30_PIP:
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIP);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3619,7 +4083,7 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIN);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3627,7 +4091,7 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
         process_rx_ppr(s, msg, len);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_BADPGTX;
+        s->current_status = T30_ERR_TX_BADPG;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3639,7 +4103,7 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
     default:
         /* We don't know what to do with this. */
         unexpected_final_frame(s, msg, len);
-        s->current_status = T30_ERR_ECMPHDTX;
+        s->current_status = T30_ERR_TX_ECMPHD;
         break;
     }
 }
@@ -3648,8 +4112,10 @@ static void process_state_iv_pps_q(t30_state_t *s, const uint8_t *msg, int len)
 static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len)
 {
     t4_stats_t stats;
+    uint8_t fcf;
 
-    switch (msg[2] & 0xFE)
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_MCF:
         s->retries = 0;
@@ -3658,7 +4124,7 @@ static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len
         span_log(&s->logging, SPAN_LOG_FLOW, "Is there more to send? - %d %d\n", s->ecm_frames, s->ecm_len[255]);
         if (!s->ecm_at_page_end  &&  get_partial_ecm_page(s) > 0)
         {
-            span_log(&s->logging, SPAN_LOG_WARNING, "Additional image data to send\n");
+            span_log(&s->logging, SPAN_LOG_FLOW, "Additional image data to send\n");
             s->ecm_block++;
             set_state(s, T30_STATE_IV);
             queue_phase(s, T30_PHASE_C_ECM_TX);
@@ -3666,23 +4132,19 @@ static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len
         }
         else
         {
-
             span_log(&s->logging, SPAN_LOG_FLOW, "Moving on to the next page\n");
             switch (s->next_tx_step)
             {
             case T30_MPS:
             case T30_PRI_MPS:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                if (t4_tx_start_page(&(s->t4)))
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                if (tx_start_page(s))
                 {
                     /* TODO: recover */
                     break;
                 }
-                s->ecm_page++;
-                s->ecm_block = 0;
                 if (get_partial_ecm_page(s) > 0)
                 {
                     set_state(s, T30_STATE_IV);
@@ -3692,29 +4154,30 @@ static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len
                 break;
             case T30_EOM:
             case T30_PRI_EOM:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+            case T30_EOS:
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                t4_tx_end(&(s->t4));
-                set_state(s, T30_STATE_R);
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                t4_tx_release(&s->t4);
+                s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
                 if (span_log_test(&s->logging, SPAN_LOG_FLOW))
                 {
-                    t4_get_transfer_statistics(&(s->t4), &stats);
+                    t4_get_transfer_statistics(&s->t4, &stats);
                     span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
                 }
+                return_to_phase_b(s, FALSE);
                 break;
             case T30_EOP:
             case T30_PRI_EOP:
-                s->retries = 0;
-                t4_tx_end_page(&(s->t4));
+                tx_end_page(s);
                 if (s->phase_d_handler)
-                    s->phase_d_handler(s, s->phase_d_user_data, T30_MCF);
-                t4_tx_end(&(s->t4));
+                    s->phase_d_handler(s, s->phase_d_user_data, fcf);
+                t4_tx_release(&s->t4);
+                s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
                 send_dcn(s);
                 if (span_log_test(&s->logging, SPAN_LOG_FLOW))
                 {
-                    t4_get_transfer_statistics(&(s->t4), &stats);
+                    t4_get_transfer_statistics(&s->t4, &stats);
                     span_log(&s->logging, SPAN_LOG_FLOW, "Success - delivered %d pages\n", stats.pages_transferred);
                 }
                 break;
@@ -3724,15 +4187,15 @@ static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len
     case T30_RNR:
         if (s->timer_t5 == 0)
             s->timer_t5 = ms_to_samples(DEFAULT_TIMER_T5);
-        set_state(s, T30_STATE_IV_PPS_RNR);
         queue_phase(s, T30_PHASE_D_TX);
-        send_simple_frame(s, T30_RR);
+        set_state(s, T30_STATE_IV_PPS_RNR);
+        send_rr(s);
         break;
     case T30_PIP:
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIP);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3740,12 +4203,12 @@ static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIN);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_DCNRRDRX;
+        s->current_status = T30_ERR_RX_DCNRRD;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3764,12 +4227,19 @@ static void process_state_iv_pps_rnr(t30_state_t *s, const uint8_t *msg, int len
 
 static void process_state_iv_ctc(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_CTR:
         /* Valid response to a CTC received */
         /* T.30 says we change back to long training here */
         s->short_train = FALSE;
+        /* Initiate resending of the remainder of the frames. */
+        set_state(s, T30_STATE_IV);
+        queue_phase(s, T30_PHASE_C_ECM_TX);
+        send_first_ecm_frame(s);
         break;
     case T30_CRP:
         repeat_last_command(s);
@@ -3787,20 +4257,23 @@ static void process_state_iv_ctc(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_iv_eor(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_RNR:
         if (s->timer_t5 == 0)
             s->timer_t5 = ms_to_samples(DEFAULT_TIMER_T5);
-        set_state(s, T30_STATE_IV_EOR_RNR);
         queue_phase(s, T30_PHASE_D_TX);
-        send_simple_frame(s, T30_RR);
+        set_state(s, T30_STATE_IV_EOR_RNR);
+        send_rr(s);
         break;
     case T30_PIN:
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIN);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3825,20 +4298,23 @@ static void process_state_iv_eor(t30_state_t *s, const uint8_t *msg, int len)
 
 static void process_state_iv_eor_rnr(t30_state_t *s, const uint8_t *msg, int len)
 {
-    switch (msg[2] & 0xFE)
+    uint8_t fcf;
+
+    fcf = msg[2] & 0xFE;
+    switch (fcf)
     {
     case T30_RNR:
         if (s->timer_t5 == 0)
             s->timer_t5 = ms_to_samples(DEFAULT_TIMER_T5);
-        set_state(s, T30_STATE_IV_EOR_RNR);
         queue_phase(s, T30_PHASE_D_TX);
-        send_simple_frame(s, T30_RR);
+        set_state(s, T30_STATE_IV_EOR_RNR);
+        send_rr(s);
         break;
     case T30_PIN:
         s->retries = 0;
         if (s->phase_d_handler)
         {
-            s->phase_d_handler(s, s->phase_d_user_data, T30_PIN);
+            s->phase_d_handler(s, s->phase_d_user_data, fcf);
             s->timer_t3 = ms_to_samples(DEFAULT_TIMER_T3);
         }
         break;
@@ -3848,7 +4324,7 @@ static void process_state_iv_eor_rnr(t30_state_t *s, const uint8_t *msg, int len
         send_dcn(s);
         break;
     case T30_DCN:
-        s->current_status = T30_ERR_DCNRRDRX;
+        s->current_status = T30_ERR_RX_DCNRRD;
         disconnect(s);
         break;
     case T30_CRP:
@@ -3872,10 +4348,13 @@ static void process_state_call_finished(t30_state_t *s, const uint8_t *msg, int 
 }
 /*- End of function --------------------------------------------------------*/
 
-static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len, int ok)
+static void process_rx_control_msg(t30_state_t *s, const uint8_t *msg, int len)
 {
-    char far_password[T30_MAX_IDENT_LEN];
-    
+    /* We should only get good frames here. */
+    print_frame(s, "Rx: ", msg, len);
+    if (s->real_time_frame_handler)
+        s->real_time_frame_handler(s, s->real_time_frame_user_data, TRUE, msg, len);
+
     if ((msg[1] & 0x10) == 0)
     {
         /* This is not a final frame */
@@ -3885,29 +4364,34 @@ static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len,
         if (s->phase != T30_PHASE_C_ECM_RX)
         {
             /* Restart the command or response timer, T2 or T4 */
-            s->timer_t2_t4 = ms_to_samples((s->timer_is_t4)  ?  DEFAULT_TIMER_T4  :  DEFAULT_TIMER_T2);
+            switch (s->timer_t2_t4_is)
+            {
+            case TIMER_IS_T1A:
+            case TIMER_IS_T2:
+            case TIMER_IS_T2A:
+            case TIMER_IS_T2B:
+                timer_t2a_start(s);
+                break;
+            case TIMER_IS_T4:
+            case TIMER_IS_T4A:
+            case TIMER_IS_T4B:
+                timer_t4a_start(s);
+                break;
+            }
         }
         /* The following handles all the message types we expect to get without
            a final frame tag. If we get one that T.30 says we should not expect
            in a particular context, its pretty harmless, so don't worry. */
         switch (msg[2] & 0xFE)
         {
-        case T30_CSI:
-            if (msg[2] == T30_CSI)
-            {
-                /* Called subscriber identification */
-                /* OK in (NSF) (CSI) DIS */
-                decode_20digit_msg(s, s->far_ident, &msg[2], len - 2);
-            }
-            else
-            {
-                /* CIG - Calling subscriber identification */
-                /* OK in (NSC) (CIG) DTC */
-                /* OK in (PWD) (SEP) (CIG) DTC */
-                decode_20digit_msg(s, s->far_ident, &msg[2], len - 2);
-            }
+        case (T30_CSI & 0xFE):
+            /* Called subscriber identification or Calling subscriber identification (T30_CIG) */
+            /* OK in (NSF) (CSI) DIS */
+            /* OK in (NSC) (CIG) DTC */
+            /* OK in (PWD) (SEP) (CIG) DTC */
+            decode_20digit_msg(s, s->rx_info.ident, &msg[2], len - 2);
             break;
-        case T30_NSF:
+        case (T30_NSF & 0xFE):
             if (msg[2] == T30_NSF)
             {
                 /* Non-standard facilities */
@@ -3926,45 +4410,43 @@ static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len,
                 /* OK in (NSC) (CIG) DTC */
             }
             break;
-        case T30_PWD:
+        case (T30_PWD & 0xFE):
             if (msg[2] == T30_PWD)
             {
                 /* Password */
-                /* OK in (PWD) (SUB) (TSI) DCS */
-                /* OK in (PWD) (SEP) (CIG) DTC */
-                decode_20digit_msg(s, far_password, &msg[2], len - 2);
-                if (strcmp(s->far_password, far_password) == 0)
-                    s->far_password_ok = TRUE;  
+                /* OK in (SUB) (SID) (SEP) (PWD) (TSI) DCS */
+                /* OK in (SUB) (SID) (SEP) (PWD) (CIG) DTC */
+                decode_20digit_msg(s, s->rx_info.password, &msg[2], len - 2);
             }
             else
             {
-                unexpected_frame(s, msg, len);
+                unexpected_non_final_frame(s, msg, len);
             }
             break;
-        case T30_SEP:
+        case (T30_SEP & 0xFE):
             if (msg[2] == T30_SEP)
             {
-                /* Selective polling */
+                /* Selective polling address */
                 /* OK in (PWD) (SEP) (CIG) DTC */
-                decode_20digit_msg(s, s->sep_address, &msg[2], len - 2);
+                decode_20digit_msg(s, s->rx_info.selective_polling_address, &msg[2], len - 2);
             }
             else
             {
-                unexpected_frame(s, msg, len);
+                unexpected_non_final_frame(s, msg, len);
             }
             break;
-        case T30_PSA:
+        case (T30_PSA & 0xFE):
             if (msg[2] == T30_PSA)
             {
-                /* Polled subaddress */
-                decode_20digit_msg(s, s->psa_address, &msg[2], len - 2);
+                /* Polled sub-address */
+                decode_20digit_msg(s, s->rx_info.polled_sub_address, &msg[2], len - 2);
             }
             else
             {
-                unexpected_frame(s, msg, len);
+                unexpected_non_final_frame(s, msg, len);
             }
             break;
-        case T30_CIA:
+        case (T30_CIA & 0xFE):
             if (msg[2] == T30_CIA)
             {
                 /* Calling subscriber internet address */
@@ -3972,10 +4454,10 @@ static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len,
             }
             else
             {
-                unexpected_frame(s, msg, len);
+                unexpected_non_final_frame(s, msg, len);
             }
             break;
-        case T30_ISP:
+        case (T30_ISP & 0xFE):
             if (msg[2] == T30_ISP)
             {
                 /* Internet selective polling address */
@@ -3983,34 +4465,37 @@ static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len,
             }
             else
             {
-                unexpected_frame(s, msg, len);
+                unexpected_non_final_frame(s, msg, len);
             }
             break;
-        case T30_TSI:
+        case (T30_TSI & 0xFE):
             /* Transmitting subscriber identity */
-            /* OK in (TSI) DCS */
             /* OK in (PWD) (SUB) (TSI) DCS */
-            decode_20digit_msg(s, s->far_ident, &msg[2], len - 2);
+            decode_20digit_msg(s, s->rx_info.ident, &msg[2], len - 2);
             break;
-        case T30_SUB:
-            /* Subaddress */
+        case (T30_NSS & 0xFE):
+            /* Non-standard facilities set-up */
+            break;
+        case (T30_SUB & 0xFE):
+            /* Sub-address */
             /* OK in (PWD) (SUB) (TSI) DCS */
-            decode_20digit_msg(s, s->far_sub_address, &msg[2], len - 2);
+            decode_20digit_msg(s, s->rx_info.sub_address, &msg[2], len - 2);
             break;
-        case T30_SID:
+        case (T30_SID & 0xFE):
             /* Sender Identification */
-            /* T.30 does not say where this is OK */
-            decode_20digit_msg(s, NULL, &msg[2], len - 2);
+            /* OK in (SUB) (SID) (SEP) (PWD) (TSI) DCS */
+            /* OK in (SUB) (SID) (SEP) (PWD) (CIG) DTC */
+            decode_20digit_msg(s, s->rx_info.sender_ident, &msg[2], len - 2);
             break;
-        case T30_CSA:
+        case (T30_CSA & 0xFE):
             /* Calling subscriber internet address */
             decode_url_msg(s, NULL, &msg[2], len - 2);
             break;
-        case T30_TSA:
+        case (T30_TSA & 0xFE):
             /* Transmitting subscriber internet address */
             decode_url_msg(s, NULL, &msg[2], len - 2);
             break;
-        case T30_IRA:
+        case (T30_IRA & 0xFE):
             /* Internet routing address */
             decode_url_msg(s, NULL, &msg[2], len - 2);
             break;
@@ -4074,7 +4559,7 @@ static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len,
             break;
         case T30_STATE_F_DOC_ECM:
         case T30_STATE_F_POST_DOC_ECM:
-            process_state_f_doc_ecm(s, msg, len);
+            process_state_f_doc_and_post_doc_ecm(s, msg, len);
             break;
         case T30_STATE_F_POST_RCP_MCF:
             process_state_f_post_rcp_mcf(s, msg, len);
@@ -4142,117 +4627,6 @@ static void hdlc_accept_control_msg(t30_state_t *s, const uint8_t *msg, int len,
 }
 /*- End of function --------------------------------------------------------*/
 
-void t30_hdlc_accept(void *user_data, const uint8_t *msg, int len, int ok)
-{
-    t30_state_t *s;
-
-    s = (t30_state_t *) user_data;
-    if (len < 0)
-    {
-        /* Special conditions */
-        switch (len)
-        {
-        case PUTBIT_TRAINING_FAILED:
-            span_log(&s->logging, SPAN_LOG_FLOW, "HDLC carrier training failed in state %d\n", s->state);
-            s->rx_trained = FALSE;
-            /* Cancel the timer, since we have actually seen something, and wait until the carrier drops
-               before proceeding. */
-            // TODO: this is not a complete answer to handling failures to train
-            s->timer_t2_t4 = 0;
-            break;
-        case PUTBIT_TRAINING_SUCCEEDED:
-            /* The modem is now trained */
-            span_log(&s->logging, SPAN_LOG_FLOW, "HDLC carrier trained in state %d\n", s->state);
-            s->rx_signal_present = TRUE;
-            s->rx_trained = TRUE;
-            break;
-        case PUTBIT_CARRIER_UP:
-            span_log(&s->logging, SPAN_LOG_FLOW, "HDLC carrier up in state %d\n", s->state);
-            s->rx_signal_present = TRUE;
-            break;
-        case PUTBIT_CARRIER_DOWN:
-            span_log(&s->logging, SPAN_LOG_FLOW, "HDLC carrier down in state %d\n", s->state);
-            s->rx_signal_present = FALSE;
-            s->rx_trained = FALSE;
-            /* If a phase change has been queued to occur after the receive signal drops,
-               its time to change. */
-            if (s->next_phase != T30_PHASE_IDLE)
-            {
-                set_phase(s, s->next_phase);
-                s->next_phase = T30_PHASE_IDLE;
-            }
-            break;
-        case PUTBIT_FRAMING_OK:
-            span_log(&s->logging, SPAN_LOG_FLOW, "HDLC framing OK in state %d\n", s->state);
-            if (!s->far_end_detected  &&  s->timer_t0_t1 > 0)
-            {
-                s->timer_t0_t1 = ms_to_samples(DEFAULT_TIMER_T1);
-                s->far_end_detected = TRUE;
-                if (s->phase == T30_PHASE_A_CED  ||  s->phase == T30_PHASE_A_CNG)
-                    set_phase(s, T30_PHASE_B_RX);
-            }
-            /* 5.4.3.1 Timer T2 is reset if flag is received */
-            if (!s->timer_is_t4  &&  s->timer_t2_t4 > 0)
-                s->timer_t2_t4 = 0;
-            break;
-        case PUTBIT_ABORT:
-            /* Just ignore these */
-            break;
-        default:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected HDLC special length - %d!\n", len);
-            break;
-        }
-        return;
-    }
-
-    /* The spec. says a command or response is not valid if:
-        - any of the frames, optional or mandatory, have an FCS error.
-        - any single frame exceeds 3s +- 15% (i.e. no frame should exceed 2.55s)
-        - the final frame is not tagged as a final frame
-        - the final frame is not a recognised one.
-       The first point seems benign. If we accept an optional frame, and a later
-       frame is bad, having accepted the optional frame should be harmless.
-       The 2.55s maximum seems to limit signalling frames to no more than 95 octets,
-       including FCS, and flag octets (assuming the use of V.21).
-    */
-    if (!ok)
-    {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Bad CRC received\n");
-        if (s->crp_enabled)
-            send_simple_frame(s, T30_CRP);
-        return;
-    }
-
-    /* Cancel the command or response timer */
-    s->timer_t2_t4 = 0;
-    if (len < 3)
-    {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Bad HDLC frame length - %d\n", len);
-        return;
-    }
-    if (msg[0] != 0xFF  ||  !(msg[1] == 0x03  ||  msg[1] == 0x13))
-    {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Bad HDLC frame header - %02x %02x\n", msg[0], msg[1]);
-        return;
-    }
-    print_frame(s, "Rx: ", msg, len);
-
-    switch (s->phase)
-    {
-    case T30_PHASE_A_CED:
-    case T30_PHASE_A_CNG:
-    case T30_PHASE_B_RX:
-    case T30_PHASE_C_ECM_RX:
-    case T30_PHASE_D_RX:
-        break;
-    default:
-        span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected HDLC frame received in phase %s, state %d\n", phase_names[s->phase], s->state);
-        break;
-    }
-    hdlc_accept_control_msg(s, msg, len, ok);
-}
-/*- End of function --------------------------------------------------------*/
-
 static void queue_phase(t30_state_t *s, int phase)
 {
     if (s->rx_signal_present)
@@ -4270,100 +4644,109 @@ static void queue_phase(t30_state_t *s, int phase)
 
 static void set_phase(t30_state_t *s, int phase)
 {
-    if (phase != s->phase)
+    //if (phase = s->phase)
+    //    return;
+    span_log(&s->logging, SPAN_LOG_FLOW, "Changing from phase %s to %s\n", phase_names[s->phase], phase_names[phase]);
+    /* We may be killing a receiver before it has declared the end of the
+       signal. Force the signal present indicator to off, because the
+       receiver will never be able to. */
+    if (s->phase != T30_PHASE_A_CED  &&  s->phase != T30_PHASE_A_CNG)
+        s->rx_signal_present = FALSE;
+    s->rx_trained = FALSE;
+    s->rx_frame_received = FALSE;
+    s->phase = phase;
+    switch (phase)
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Changing from phase %s to %s\n", phase_names[s->phase], phase_names[phase]);
-        /* We may be killing a receiver before it has declared the end of the
-           signal. Force the signal present indicator to off, because the
-           receiver will never be able to. */
-        if (s->phase != T30_PHASE_A_CED  &&  s->phase != T30_PHASE_A_CNG)
-            s->rx_signal_present = FALSE;
-        s->rx_trained = FALSE;
-        s->phase = phase;
-        switch (phase)
+    case T30_PHASE_A_CED:
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_V21, 300, FALSE, TRUE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_CED, 0, FALSE, FALSE);
+        break;
+    case T30_PHASE_A_CNG:
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_V21, 300, FALSE, TRUE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_CNG, 0, FALSE, FALSE);
+        break;
+    case T30_PHASE_B_RX:
+    case T30_PHASE_D_RX:
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_V21, 300, FALSE, TRUE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        break;
+    case T30_PHASE_B_TX:
+    case T30_PHASE_D_TX:
+        if (!s->far_end_detected  &&  s->timer_t0_t1 > 0)
         {
-        case T30_PHASE_A_CED:
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_V21, FALSE, TRUE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_CED, FALSE, FALSE);
-            break;
-        case T30_PHASE_A_CNG:
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_V21, FALSE, TRUE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_CNG, FALSE, FALSE);
-            break;
-        case T30_PHASE_B_RX:
-        case T30_PHASE_D_RX:
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_V21, FALSE, TRUE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            break;
-        case T30_PHASE_B_TX:
-        case T30_PHASE_D_TX:
-            if (!s->far_end_detected  &&  s->timer_t0_t1 > 0)
-            {
-                s->timer_t0_t1 = ms_to_samples(DEFAULT_TIMER_T1);
-                s->far_end_detected = TRUE;
-            }
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_V21, FALSE, TRUE);
-            break;
-        case T30_PHASE_C_NON_ECM_RX:
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-            s->timer_is_t4 = FALSE;
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, fallback_sequence[s->current_fallback].modem_type, s->short_train, FALSE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            break;
-        case T30_PHASE_C_NON_ECM_TX:
-            /* Pause before switching from anything to phase C */
-            /* Always prime the training count for 1.5s of data at the current rate. Its harmless if
-               we prime it and are not doing TCF. */
-            s->training_test_bits = (3*fallback_sequence[s->current_fallback].bit_rate)/2;
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, fallback_sequence[s->current_fallback].modem_type, s->short_train, FALSE);
-            break;
-        case T30_PHASE_C_ECM_RX:
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-            s->timer_is_t4 = FALSE;
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, fallback_sequence[s->current_fallback].modem_type, s->short_train, TRUE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            break;
-        case T30_PHASE_C_ECM_TX:
-            /* Pause before switching from anything to phase C */
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, fallback_sequence[s->current_fallback].modem_type, s->short_train, TRUE);
-            break;
-        case T30_PHASE_E:
-            /* Send a little silence before ending things, to ensure the
-               buffers are all flushed through, and the far end has seen
-               the last message we sent. */
-            s->training_current_zeros = 0;
-            s->training_most_zeros = 0;
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, FALSE, FALSE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_PAUSE, FINAL_FLUSH_TIME, FALSE);
-            break;
-        case T30_PHASE_CALL_FINISHED:
-            if (s->set_rx_type_handler)
-                s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_DONE, FALSE, FALSE);
-            if (s->set_tx_type_handler)
-                s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_DONE, FALSE, FALSE);
-            break;
+            s->timer_t0_t1 = ms_to_samples(DEFAULT_TIMER_T1);
+            s->far_end_detected = TRUE;
         }
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_V21, 300, FALSE, TRUE);
+        break;
+    case T30_PHASE_C_NON_ECM_RX:
+        if (s->set_rx_type_handler)
+        {
+            /* Momentarily stop the receive modem, so the next change is forced to happen. If we don't do this
+               an HDLC message on the slow modem, which has disabled the fast modem, will prevent the same
+               fast modem from restarting. */
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+            s->set_rx_type_handler(s->set_rx_type_user_data, fallback_sequence[s->current_fallback].modem_type, fallback_sequence[s->current_fallback].bit_rate, s->short_train, FALSE);
+        }
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        break;
+    case T30_PHASE_C_NON_ECM_TX:
+        /* Pause before switching from anything to phase C */
+        /* Always prime the training count for 1.5s of data at the current rate. Its harmless if
+           we prime it and are not doing TCF. */
+        s->tcf_test_bits = (3*fallback_sequence[s->current_fallback].bit_rate)/2;
+        if (s->set_rx_type_handler)
+        {
+            /* Momentarily stop the receive modem, so the next change is forced to happen. If we don't do this
+               an HDLC message on the slow modem, which has disabled the fast modem, will prevent the same
+               fast modem from restarting. */
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        }
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, fallback_sequence[s->current_fallback].modem_type, fallback_sequence[s->current_fallback].bit_rate, s->short_train, FALSE);
+        break;
+    case T30_PHASE_C_ECM_RX:
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, fallback_sequence[s->current_fallback].modem_type, fallback_sequence[s->current_fallback].bit_rate, s->short_train, TRUE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        break;
+    case T30_PHASE_C_ECM_TX:
+        /* Pause before switching from anything to phase C */
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, fallback_sequence[s->current_fallback].modem_type, fallback_sequence[s->current_fallback].bit_rate, s->short_train, TRUE);
+        break;
+    case T30_PHASE_E:
+        /* Send a little silence before ending things, to ensure the
+           buffers are all flushed through, and the far end has seen
+           the last message we sent. */
+        s->tcf_test_bits = 0;
+        s->tcf_current_zeros = 0;
+        s->tcf_most_zeros = 0;
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_NONE, 0, FALSE, FALSE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_PAUSE, 0, FINAL_FLUSH_TIME, FALSE);
+        break;
+    case T30_PHASE_CALL_FINISHED:
+        if (s->set_rx_type_handler)
+            s->set_rx_type_handler(s->set_rx_type_user_data, T30_MODEM_DONE, 0, FALSE, FALSE);
+        if (s->set_tx_type_handler)
+            s->set_tx_type_handler(s->set_tx_type_user_data, T30_MODEM_DONE, 0, FALSE, FALSE);
+        break;
     }
 }
 /*- End of function --------------------------------------------------------*/
@@ -4379,375 +4762,83 @@ static void set_state(t30_state_t *s, int state)
 }
 /*- End of function --------------------------------------------------------*/
 
-void t30_front_end_status(void *user_data, int status)
+static void repeat_last_command(t30_state_t *s)
 {
-    t30_state_t *s;
-    
-    s = (t30_state_t *) user_data;
-
-    switch (status)
+    s->step = 0;
+    if (++s->retries >= MAX_COMMAND_TRIES)
     {
-    case T30_FRONT_END_SEND_STEP_COMPLETE:
-    case T30_FRONT_END_SEND_COMPLETE:
-        span_log(&s->logging, SPAN_LOG_FLOW, "Send complete in phase %s, state %d\n", phase_names[s->phase], s->state);
-        /* We have finished sending our messages, so move on to the next operation. */
+        span_log(&s->logging, SPAN_LOG_FLOW, "Too many retries. Giving up.\n");
         switch (s->state)
         {
-        case T30_STATE_ANSWERING:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Starting answer mode\n");
-            set_phase(s, T30_PHASE_B_TX);
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
-            s->timer_is_t4 = FALSE;
-            s->dis_received = FALSE;
-            send_dis_or_dtc_sequence(s);
-            break;
-        case T30_STATE_R:
-            switch (s->step)
-            {
-            case 0:
-                s->step++;
-                if (send_ident_frame(s, T30_CSI))
-                    break;
-                /* Fall through */
-            case 1:
-                s->step++;
-                set_dis_or_dtc(s);
-                send_frame(s, s->dis_dtc_frame, s->dis_dtc_len);
-                break;
-            case 2:
-                s->step++;
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                break;        
-            default:
-                /* Wait for an acknowledgement. */
-                set_phase(s, T30_PHASE_B_RX);
-                s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4);
-                s->timer_is_t4 = TRUE;
-                break;
-            }
-            break;
-        case T30_STATE_F_CFR:
-            if (s->step == 0)
-            {
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                s->step++;
-            }
-            else
-            {
-                if (s->error_correcting_mode)
-                {
-                    set_state(s, T30_STATE_F_DOC_ECM);
-                    set_phase(s, T30_PHASE_C_ECM_RX);
-                }
-                else
-                {
-                    set_state(s, T30_STATE_F_DOC_NON_ECM);
-                    set_phase(s, T30_PHASE_C_NON_ECM_RX);
-                }
-                s->next_rx_step = T30_MPS;
-            }
-            break;
-        case T30_STATE_F_FTT:
-            if (s->step == 0)
-            {
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                s->step++;
-            }
-            else
-            {
-                set_phase(s, T30_PHASE_B_RX);
-                s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4);
-                s->timer_is_t4 = TRUE;
-            }
-            break;
-        case T30_STATE_III_Q_MCF:
-        case T30_STATE_III_Q_RTP:
-        case T30_STATE_III_Q_RTN:
-        case T30_STATE_F_POST_RCP_PPR:
-        case T30_STATE_F_POST_RCP_MCF:
-            if (s->step == 0)
-            {
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                s->step++;
-            }
-            else
-            {
-                switch (s->next_rx_step)
-                {
-                case T30_MPS:
-                case T30_PRI_MPS:
-                    if (s->error_correcting_mode)
-                    {
-                        set_state(s, T30_STATE_F_DOC_ECM);
-                        set_phase(s, T30_PHASE_C_ECM_RX);
-                    }
-                    else
-                    {
-                        set_state(s, T30_STATE_F_DOC_NON_ECM);
-                        set_phase(s, T30_PHASE_C_NON_ECM_RX);
-                    }
-                    break;
-                case T30_EOM:
-                case T30_PRI_EOM:
-                    /* TODO: */
-                    disconnect(s);
-                    break;
-                case T30_EOP:
-                case T30_PRI_EOP:
-                    disconnect(s);
-                    break;
-                default:
-                    span_log(&s->logging, SPAN_LOG_FLOW, "Unknown next rx step - %d\n", s->next_rx_step);
-                    disconnect(s);
-                    break;
-                }
-            }
+        case T30_STATE_D_POST_TCF:
+            /* Received no response to DCS or TCF */
+            s->current_status = T30_ERR_TX_PHBDEAD;
             break;
         case T30_STATE_II_Q:
         case T30_STATE_IV_PPS_NULL:
         case T30_STATE_IV_PPS_Q:
-        case T30_STATE_IV_PPS_RNR:
-        case T30_STATE_IV_EOR_RNR:
-        case T30_STATE_F_POST_RCP_RNR:
-            if (s->step == 0)
-            {
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                s->step++;
-            }
-            else
-            {
-                /* We have finished sending the post image message. Wait for an
-                   acknowledgement. */
-                set_phase(s, T30_PHASE_D_RX);
-                s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4);
-                s->timer_is_t4 = TRUE;
-            }
-            break;
-        case T30_STATE_B:
-            /* We have now allowed time for the last message to flush
-               through the system, so it is safe to report the end of the
-               call. */
-            if (s->phase_e_handler)
-                s->phase_e_handler(s, s->phase_e_user_data, s->current_status);
-            set_state(s, T30_STATE_CALL_FINISHED);
-            set_phase(s, T30_PHASE_CALL_FINISHED);
-            break;
-        case T30_STATE_C:
-            if (s->step == 0)
-            {
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                s->step++;
-            }
-            else
-            {
-                /* We just sent the disconnect message. Now it is time to disconnect */
-                disconnect(s);
-            }
-            break;
-        case T30_STATE_D:
-            switch (s->step)
-            {
-            case 0:
-                s->step++;
-                if (send_sub_frame(s))
-                    break;
-                /* Fall through */
-            case 1:
-                s->step++;
-                if (send_ident_frame(s, T30_TSI))
-                    break;
-                /* Fall through */
-            case 2:
-                s->step++;
-                send_frame(s, s->dcs_frame, s->dcs_len);
-                break;
-            case 3:
-                s->step++;
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                break;        
-            default:
-                if ((s->iaf & T30_IAF_MODE_NO_TCF))
-                {
-                    /* Skip the trainability test */
-                    s->retries = 0;
-                    s->short_train = TRUE;
-                    if (s->error_correcting_mode)
-                    {
-                        set_state(s, T30_STATE_IV);
-                        queue_phase(s, T30_PHASE_C_ECM_TX);
-                    }
-                    else
-                    {
-                        set_state(s, T30_STATE_I);
-                        queue_phase(s, T30_PHASE_C_NON_ECM_TX);
-                    }
-                }
-                else
-                {
-                    /* Do the trainability test */
-                    set_state(s, T30_STATE_D_TCF);
-                    set_phase(s, T30_PHASE_C_NON_ECM_TX);
-                }
-                break;
-            }
-            break;
-        case T30_STATE_D_TCF:
-            /* Finished sending training test. Listen for the response. */
-            set_phase(s, T30_PHASE_B_RX);
-            s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4);
-            s->timer_is_t4 = TRUE;
-            set_state(s, T30_STATE_D_POST_TCF);
-            break;
-        case T30_STATE_I:
-            /* Send the end of page message */
-            set_phase(s, T30_PHASE_D_TX);
-            set_state(s, T30_STATE_II_Q);
-            /* We might need to resend the page we are on, but we need to check if there
-               are any more pages to send, so we can send the correct signal right now. */
-            send_simple_frame(s, s->next_tx_step = check_next_tx_step(s));
-            break;
-        case T30_STATE_IV:
-            /* We have finished sending an FCD frame */
-            if (s->step == 0)
-            {
-                if (send_next_ecm_frame(s))
-                {
-                    if (s->send_hdlc_handler)
-                        s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
-                    s->step++;
-                }
-            }
-            else
-            {
-                /* Send the end of page or partial page message */
-                set_phase(s, T30_PHASE_D_TX);
-                s->next_tx_step = check_next_tx_step(s);
-                if (send_pps_frame(s) == T30_NULL)
-                    set_state(s, T30_STATE_IV_PPS_NULL);
-                else
-                    set_state(s, T30_STATE_IV_PPS_Q);
-            }
-            break;
-        case T30_STATE_CALL_FINISHED:
-            /* Just ignore anything that happens now. We might get here if a premature
-               disconnect from the far end overlaps something. */
+            /* No response after sending a page */
+            s->current_status = T30_ERR_TX_PHDDEAD;
             break;
         default:
-            span_log(&s->logging, SPAN_LOG_FLOW, "Bad state in t30_front_end_status - %d\n", s->state);
+            /* Disconnected after permitted retries */
+            s->current_status = T30_ERR_RETRYDCN;
             break;
         }
-        break;
-    case T30_FRONT_END_RECEIVE_COMPLETE:
-        span_log(&s->logging, SPAN_LOG_FLOW, "Receive complete in phase %s, state %d\n", phase_names[s->phase], s->state);
-        /* Usually receive complete is notified by a carrier down signal. However,
-           in cases like a T.38 packet stream dying in the middle of reception
-           there needs to be a means to stop things. */
-        switch (s->phase)
-        {
-        case T30_PHASE_C_NON_ECM_RX:
-            t30_non_ecm_put_bit(s, PUTBIT_CARRIER_DOWN);
-            break;
-        default:
-            t30_hdlc_accept(s, NULL, PUTBIT_CARRIER_DOWN, TRUE);
-            break;
-        }
-        break;
-    case T30_FRONT_END_SIGNAL_PRESENT:
-        span_log(&s->logging, SPAN_LOG_FLOW, "A signal is present\n");
-        /* The front end is explicitly telling us the signal we expect is present. This might
-           be a premature indication from a T.38 implementation, but we have to believe it.
-           if we don't we can time out improperly. For example, we might get an image modem
-           carrier signal, but the first HDLC frame might only occur several seconds later.
-           Many ECM senders idle on HDLC flags while waiting for the paper or filing system
-           to become ready. T.38 offers no specific indication of correct carrier training, so
-           if we don't kill the timer on the initial carrier starting signal, we will surely
-           time out quite often before the next thing we receive. */
-        switch (s->phase)
-        {
-        case T30_PHASE_A_CED:
-        case T30_PHASE_A_CNG:
-        case T30_PHASE_B_RX:
-        case T30_PHASE_D_RX:
-            /* We are running a V.21 receive modem, where an explicit training indication
-               will not occur. */
-            t30_hdlc_accept(s, NULL, PUTBIT_CARRIER_UP, TRUE);
-            t30_hdlc_accept(s, NULL, PUTBIT_FRAMING_OK, TRUE);
-            break;
-        default:
-            /* Cancel any receive timeout, and declare that a receive signal is present,
-               since the front end is explicitly telling us we have seen something. */
-            s->rx_signal_present = TRUE;
-            s->timer_t2_t4 = 0;
-            break;
-        }
-        break;
-    case T30_FRONT_END_SIGNAL_ABSENT:
-        span_log(&s->logging, SPAN_LOG_FLOW, "No signal is present\n");
-        /* TODO: Should we do anything here? */
-        break;
+        send_dcn(s);
+        return;
     }
-}
-/*- End of function --------------------------------------------------------*/
-
-static void repeat_last_command(t30_state_t *s)
-{
+    span_log(&s->logging, SPAN_LOG_FLOW, "Retry number %d\n", s->retries);
     switch (s->state)
     {
     case T30_STATE_R:
         s->dis_received = FALSE;
-        set_phase(s, T30_PHASE_B_TX);
-        send_dis_or_dtc_sequence(s);
+        queue_phase(s, T30_PHASE_B_TX);
+        send_dis_or_dtc_sequence(s, TRUE);
         break;
     case T30_STATE_III_Q_MCF:
-        set_phase(s, T30_PHASE_D_TX);
+        queue_phase(s, T30_PHASE_D_TX);
         send_simple_frame(s, T30_MCF);
         break;
     case T30_STATE_III_Q_RTP:
-        set_phase(s, T30_PHASE_D_TX);
+        queue_phase(s, T30_PHASE_D_TX);
         send_simple_frame(s, T30_RTP);
         break;
     case T30_STATE_III_Q_RTN:
-        set_phase(s, T30_PHASE_D_TX);
+        queue_phase(s, T30_PHASE_D_TX);
         send_simple_frame(s, T30_RTN);
         break;
     case T30_STATE_II_Q:
-        set_phase(s, T30_PHASE_D_TX);
+        queue_phase(s, T30_PHASE_D_TX);
         send_simple_frame(s, s->next_tx_step);
         break;
     case T30_STATE_IV_PPS_NULL:
     case T30_STATE_IV_PPS_Q:
-        set_phase(s, T30_PHASE_D_TX);
+        queue_phase(s, T30_PHASE_D_TX);
         send_pps_frame(s);
         break;
     case T30_STATE_IV_PPS_RNR:
     case T30_STATE_IV_EOR_RNR:
-        set_phase(s, T30_PHASE_D_TX);
-        send_simple_frame(s, T30_RNR);
+        queue_phase(s, T30_PHASE_D_TX);
+        send_rr(s);
         break;
     case T30_STATE_D:
-        set_phase(s, T30_PHASE_B_TX);
-        send_dcs_sequence(s);
+        queue_phase(s, T30_PHASE_B_TX);
+        send_dcs_sequence(s, TRUE);
         break;
     case T30_STATE_F_FTT:
-        set_phase(s, T30_PHASE_B_TX);
+        queue_phase(s, T30_PHASE_B_TX);
         send_simple_frame(s, T30_FTT);
         break;
     case T30_STATE_F_CFR:
-        set_phase(s, T30_PHASE_B_TX);
-        send_simple_frame(s, T30_CFR);
+        queue_phase(s, T30_PHASE_B_TX);
+        send_cfr_sequence(s, TRUE);
         break;
     case T30_STATE_D_POST_TCF:
         /* Need to send the whole training thing again */
         s->short_train = FALSE;
-        set_phase(s, T30_PHASE_B_TX);
-        send_dcs_sequence(s);
+        queue_phase(s, T30_PHASE_B_TX);
+        send_dcs_sequence(s, TRUE);
         break;
     case T30_STATE_F_POST_RCP_RNR:
         /* Just ignore */
@@ -4756,9 +4847,116 @@ static void repeat_last_command(t30_state_t *s)
         span_log(&s->logging,
                  SPAN_LOG_FLOW,
                  "Repeat command called with nothing to repeat - phase %s, state %d\n",
-                 phase_names[s->phase], s->state);
+                 phase_names[s->phase],
+                 s->state);
         break;
     }
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t2_start(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "Start T2\n");
+    s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2);
+    s->timer_t2_t4_is = TIMER_IS_T2;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t2a_start(t30_state_t *s)
+{
+    /* T.30 Annex A says timeout T1 should be used in ECM phase C to time out the
+       first frame after the flags start. This seems a strange reuse of the name T1
+       for a different purpose, but there it is. We distinguish it by calling it T1A. */
+    if (s->phase == T30_PHASE_C_ECM_RX)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Start T1A\n");
+        s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T1A);
+        s->timer_t2_t4_is = TIMER_IS_T1A;
+    }
+    else
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Start T2A\n");
+        s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2A);
+        s->timer_t2_t4_is = TIMER_IS_T2A;
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t2b_start(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "Start T2B\n");
+    s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T2B);
+    s->timer_t2_t4_is = TIMER_IS_T2B;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t4_start(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "Start T4\n");
+    s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4);
+    s->timer_t2_t4_is = TIMER_IS_T4;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t4a_start(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "Start T4A\n");
+    s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4A);
+    s->timer_t2_t4_is = TIMER_IS_T4A;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t4b_start(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "Start T4B\n");
+    s->timer_t2_t4 = ms_to_samples(DEFAULT_TIMER_T4B);
+    s->timer_t2_t4_is = TIMER_IS_T4B;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t2_t4_stop(t30_state_t *s)
+{
+    const char *tag;
+    
+    switch (s->timer_t2_t4_is)
+    {
+    case TIMER_IS_IDLE:
+        tag = "none";
+        break;
+    case TIMER_IS_T1A:
+        tag = "T1A";
+        break;
+    case TIMER_IS_T2:
+        tag = "T2";
+        break;
+    case TIMER_IS_T2A:
+        tag = "T2A";
+        break;
+    case TIMER_IS_T2B:
+        tag = "T2B";
+        break;
+    case TIMER_IS_T2C:
+        tag = "T2C";
+        break;
+    case TIMER_IS_T4:
+        tag = "T4";
+        break;
+    case TIMER_IS_T4A:
+        tag = "T4A";
+        break;
+    case TIMER_IS_T4B:
+        tag = "T4B";
+        break;
+    case TIMER_IS_T4C:
+        tag = "T4C";
+        break;
+    default:
+        tag = "T2/T4";
+        break;
+    }
+    span_log(&s->logging, SPAN_LOG_FLOW, "Stop %s (%d remaining)\n", tag, s->timer_t2_t4);
+    s->timer_t2_t4 = 0;
+    s->timer_t2_t4_is = TIMER_IS_IDLE;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -4797,41 +4995,93 @@ static void timer_t1_expired(t30_state_t *s)
 
 static void timer_t2_expired(t30_state_t *s)
 {
-    span_log(&s->logging, SPAN_LOG_FLOW, "T2 expired in phase %s, state %d\n", phase_names[s->phase], s->state);
+    if (s->timer_t2_t4_is != TIMER_IS_T2B)
+        span_log(&s->logging, SPAN_LOG_FLOW, "T2 expired in phase %s, state %d\n", phase_names[s->phase], s->state);
     switch (s->state)
     {
+    case T30_STATE_III_Q_MCF:
+    case T30_STATE_III_Q_RTP:
+    case T30_STATE_III_Q_RTN:
+    case T30_STATE_F_POST_RCP_PPR:
+    case T30_STATE_F_POST_RCP_MCF:
+        switch (s->next_rx_step)
+        {
+        case T30_EOM:
+        case T30_PRI_EOM:
+        case T30_EOS:
+            /* We didn't receive a response to our T30_MCF after T30_EOM, so we must be OK
+               to proceed to phase B, and pretty act like its the beginning of a call. */
+            span_log(&s->logging, SPAN_LOG_FLOW, "Returning to phase B after %s\n", t30_frametype(s->next_rx_step));
+            set_phase(s, T30_PHASE_B_TX);
+            timer_t2_start(s);
+            s->dis_received = FALSE;
+            send_dis_or_dtc_sequence(s, TRUE);
+            return;
+        }
+        break;
+    case T30_STATE_F_TCF:
+        span_log(&s->logging, SPAN_LOG_FLOW, "No TCF data received\n");
+        set_phase(s, T30_PHASE_B_TX);
+        set_state(s, T30_STATE_F_FTT);
+        send_simple_frame(s, T30_FTT);
+        return;
     case T30_STATE_F_DOC_ECM:
     case T30_STATE_F_DOC_NON_ECM:
         /* While waiting for FAX page */
-        s->current_status = T30_ERR_T2EXPFAXRX;
+        s->current_status = T30_ERR_RX_T2EXPFAX;
         break;
     case T30_STATE_F_POST_DOC_ECM:
     case T30_STATE_F_POST_DOC_NON_ECM:
         /* While waiting for next FAX page */
-        s->current_status = T30_ERR_T2EXPMPSRX;
+        s->current_status = T30_ERR_RX_T2EXPMPS;
         break;
 #if 0
     case ??????:
         /* While waiting for DCN */
-        s->current_status = T30_ERR_T2EXPDCNRX;
+        s->current_status = T30_ERR_RX_T2EXPDCN;
         break;
     case ??????:
         /* While waiting for phase D */
-        s->current_status = T30_ERR_T2EXPDRX;
+        s->current_status = T30_ERR_RX_T2EXPD;
         break;
 #endif
     case T30_STATE_IV_PPS_RNR:
     case T30_STATE_IV_EOR_RNR:
         /* While waiting for RR command */
-        s->current_status = T30_ERR_T2EXPRRRX;
+        s->current_status = T30_ERR_RX_T2EXPRR;
         break;
     case T30_STATE_R:
         /* While waiting for NSS, DCS or MCF */
-        s->current_status = T30_ERR_T2EXPRX;
+        s->current_status = T30_ERR_RX_T2EXP;
+        break;
+    case T30_STATE_F_FTT:
         break;
     }
-    set_phase(s, T30_PHASE_B_TX);
+    queue_phase(s, T30_PHASE_B_TX);
     start_receiving_document(s);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t1a_expired(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "T1A expired in phase %s, state %d. An HDLC frame lasted too long.\n", phase_names[s->phase], s->state);
+    s->current_status = T30_ERR_HDLC_CARRIER;
+    disconnect(s);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t2a_expired(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "T2A expired in phase %s, state %d. An HDLC frame lasted too long.\n", phase_names[s->phase], s->state);
+    s->current_status = T30_ERR_HDLC_CARRIER;
+    disconnect(s);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t2b_expired(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "T2B expired in phase %s, state %d. The line is now quiet.\n", phase_names[s->phase], s->state);
+    timer_t2_expired(s);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -4845,31 +5095,32 @@ static void timer_t3_expired(t30_state_t *s)
 
 static void timer_t4_expired(t30_state_t *s)
 {
-    /* There was no response (or only a corrupt response) to a command */
+    /* There was no response (or only a corrupt response) to a command,
+       within the T4 timeout period. */
     span_log(&s->logging, SPAN_LOG_FLOW, "T4 expired in phase %s, state %d\n", phase_names[s->phase], s->state);
-    if (++s->retries > MAX_MESSAGE_TRIES)
-    {
-        switch (s->state)
-        {
-        case T30_STATE_D_POST_TCF:
-            /* Received no response to DCS or TCF */
-            s->current_status = T30_ERR_PHBDEADTX;
-            break;
-        case T30_STATE_II_Q:
-        case T30_STATE_IV_PPS_NULL:
-        case T30_STATE_IV_PPS_Q:
-            /* No response after sending a page */
-            s->current_status = T30_ERR_PHDDEADTX;
-            break;
-        default:
-            /* Disconnected after permitted retries */
-            s->current_status = T30_ERR_RETRYDCN;
-            break;
-        }
-        send_dcn(s);
-        return;
-    }
+    /* Of course, things might just be a little late, especially if there are T.38
+       links in the path. There is no point in simply timing out, and resending,
+       if we are currently receiving something from the far end - its a half-duplex
+       path, so the two transmissions will conflict. Our best strategy is to wait
+       until there is nothing being received, or give up after a long backstop timeout.
+       In the meantime, if we get a meaningful, if somewhat delayed, response, we
+       should accept it and carry on. */
     repeat_last_command(s);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t4a_expired(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "T4A expired in phase %s, state %d. An HDLC frame lasted too long.\n", phase_names[s->phase], s->state);
+    s->current_status = T30_ERR_HDLC_CARRIER;
+    disconnect(s);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void timer_t4b_expired(t30_state_t *s)
+{
+    span_log(&s->logging, SPAN_LOG_FLOW, "T4B expired in phase %s, state %d. The line is now quiet.\n", phase_names[s->phase], s->state);
+    timer_t4_expired(s);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -4877,47 +5128,7 @@ static void timer_t5_expired(t30_state_t *s)
 {
     /* Give up waiting for the receiver to become ready in error correction mode */
     span_log(&s->logging, SPAN_LOG_FLOW, "T5 expired in phase %s, state %d\n", phase_names[s->phase], s->state);
-    s->current_status = T30_ERR_T5_EXPIRED;
-    send_dcn(s);
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_timer_update(t30_state_t *s, int samples)
-{
-    if (s->timer_t0_t1 > 0)
-    {
-        s->timer_t0_t1 -= samples;
-        if (s->timer_t0_t1 <= 0)
-        {
-            if (s->far_end_detected)
-                timer_t1_expired(s);
-            else
-                timer_t0_expired(s);
-        }
-    }
-    if (s->timer_t3 > 0)
-    {
-        s->timer_t3 -= samples;
-        if (s->timer_t3 <= 0)
-            timer_t3_expired(s);
-    }
-    if (s->timer_t2_t4 > 0)
-    {
-        s->timer_t2_t4 -= samples;
-        if (s->timer_t2_t4 <= 0)
-        {
-            if (s->timer_is_t4)
-                timer_t4_expired(s);
-            else
-                timer_t2_expired(s);
-        }
-    }
-    if (s->timer_t5 > 0)
-    {
-        s->timer_t5 -= samples;
-        if (s->timer_t5 <= 0)
-            timer_t5_expired(s);
-    }
+    s->current_status = T30_ERR_TX_T5EXP;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -4925,11 +5136,11 @@ static void decode_20digit_msg(t30_state_t *s, char *msg, const uint8_t *pkt, in
 {
     int p;
     int k;
-    char text[20 + 1];
+    char text[T30_MAX_IDENT_LEN + 1];
 
     if (msg == NULL)
         msg = text;
-    if (len > T30_MAX_IDENT_LEN)
+    if (len > T30_MAX_IDENT_LEN + 1)
     {
         unexpected_frame_length(s, pkt, len);
         msg[0] = '\0';
@@ -4944,7 +5155,7 @@ static void decode_20digit_msg(t30_state_t *s, char *msg, const uint8_t *pkt, in
     while (p > 1)
         msg[k++] = pkt[--p];
     msg[k] = '\0';
-    span_log(&s->logging, SPAN_LOG_FLOW, "Remote fax gave %s as: \"%s\"\n", t30_frametype(pkt[0]), msg);
+    span_log(&s->logging, SPAN_LOG_FLOW, "Remote gave %s as: \"%s\"\n", t30_frametype(pkt[0]), msg);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -4984,762 +5195,906 @@ static void decode_url_msg(t30_state_t *s, char *msg, const uint8_t *pkt, int le
 }
 /*- End of function --------------------------------------------------------*/
 
-const char *t30_frametype(uint8_t x)
+static void t30_non_ecm_rx_status(void *user_data, int status)
 {
-    switch (x & 0xFE)
+    t30_state_t *s;
+    int was_trained;
+
+    s = (t30_state_t *) user_data;
+    span_log(&s->logging, SPAN_LOG_FLOW, "Non-ECM signal status is %s (%d) in state %d\n", signal_status_to_str(status), status, s->state);
+    switch (status)
     {
-    case T30_DIS:
-        if (x == T30_DTC)
-            return "DTC";
-        return "DIS";
-    case T30_CSI:
-        if (x == T30_CIG)
-            return "CIG";
-        return "CSI";
-    case T30_NSF:
-        if (x == T30_NSC)
-            return "NSC";
-        return "NSF";
-    case T30_PWD & 0xFE:
-        if (x == T30_PWD)
-            return "PWD";
+    case SIG_STATUS_TRAINING_IN_PROGRESS:
         break;
-    case T30_SEP & 0xFE:
-        if (x == T30_SEP)
-            return "SEP";
+    case SIG_STATUS_TRAINING_FAILED:
+        s->rx_trained = FALSE;
         break;
-    case T30_PSA & 0xFE:
-        if (x == T30_PSA)
-            return "PSA";
+    case SIG_STATUS_TRAINING_SUCCEEDED:
+        /* The modem is now trained */
+        /* In case we are in trainability test mode... */
+        s->tcf_test_bits = 0;
+        s->tcf_current_zeros = 0;
+        s->tcf_most_zeros = 0;
+        s->rx_signal_present = TRUE;
+        s->rx_trained = TRUE;
+        timer_t2_t4_stop(s);
         break;
-    case T30_CIA & 0xFE:
-        if (x == T30_CIA)
-            return "CIA";
+    case SIG_STATUS_CARRIER_UP:
         break;
-    case T30_ISP & 0xFE:
-        if (x == T30_ISP)
-            return "ISP";
-        break;
-    case T30_DCS:
-        return "DCS";
-    case T30_TSI:
-        return "TSI";
-    case T30_NSS:
-        return "NSS";
-    case T30_SUB:
-        return "SUB";
-    case T30_SID:
-        return "SID";
-    case T30_CTC:
-        return "CTC";
-    case T30_TSA:
-        return "TSA";
-    case T30_IRA:
-        return "IRA";
-    case T30_CFR:
-        return "CFR";
-    case T30_FTT:
-        return "FTT";
-    case T30_CTR:
-        return "CTR";
-    case T30_CSA:
-        return "CSA";
-    case T30_EOM:
-        return "EOM";
-    case T30_MPS:
-        return "MPS";
-    case T30_EOP:
-        return "EOP";
-    case T30_PRI_EOM:
-        return "PRI_EOM";
-    case T30_PRI_MPS:
-        return "PRI_MPS";
-    case T30_PRI_EOP:
-        return "PRI_EOP";
-    case T30_EOS:
-        return "EOS";
-    case T30_PPS:
-        return "PPS";
-    case T30_EOR:
-        return "EOR";
-    case T30_RR:
-        return "RR";
-    case T30_MCF:
-        return "MCF";
-    case T30_RTP:
-        return "RTP";
-    case T30_RTN:
-        return "RTN";
-    case T30_PIP:
-        return "PIP";
-    case T30_PIN:
-        return "PIN";
-    case T30_PPR:
-        return "PPR";
-    case T30_RNR:
-        return "RNR";
-    case T30_ERR:
-        return "ERR";
-    case T30_FDM:
-        return "FDM";
-    case T30_DCN:
-        return "DCN";
-    case T30_CRP:
-        return "CRP";
-    case T30_FNV:
-        return "FNV";
-    case T30_TNR:
-        return "TNR";
-    case T30_TR:
-        return "TR";
-    case T30_PID:
-        return "PID";
-    case T30_NULL:
-        return "NULL";
-    case T4_FCD:
-        return "FCD";
-    case T4_RCP:
-        return "RCP";
-    }
-    return "???";
-}
-/*- End of function --------------------------------------------------------*/
-
-static void octet_reserved_bit(logging_state_t *log,
-                               const uint8_t *msg,
-                               int bit_no,
-                               int expected)
-{
-    char s[10] = ".... ....";
-    int bit;
-    uint8_t octet;
-    
-    /* Break out the octet and the bit number within it. */
-    octet = msg[((bit_no - 1) >> 3) + 3];
-    bit_no = (bit_no - 1) & 7;
-    /* Now get the actual bit. */
-    bit = (octet >> bit_no) & 1;
-    /* Is it what it should be. */
-    if (bit ^ expected)
-    {
-        /* Only log unexpected values. */
-        s[7 - bit_no + ((bit_no < 4)  ?  1  :  0)] = (uint8_t) (bit + '0');
-        span_log(log, SPAN_LOG_FLOW, "  %s= Unexpected state for reserved bit: %d\n", s, bit);
-    }
-}
-/*- End of function --------------------------------------------------------*/
-
-static void octet_bit_field(logging_state_t *log,
-                            const uint8_t *msg,
-                            int bit_no,
-                            const char *desc,
-                            const char *yeah,
-                            const char *neigh)
-{
-    char s[10] = ".... ....";
-    int bit;
-    uint8_t octet;
-    const char *tag;
-
-    /* Break out the octet and the bit number within it. */
-    octet = msg[((bit_no - 1) >> 3) + 3];
-    bit_no = (bit_no - 1) & 7;
-    /* Now get the actual bit. */
-    bit = (octet >> bit_no) & 1;
-    /* Edit the bit string for display. */
-    s[7 - bit_no + ((bit_no < 4)  ?  1  :  0)] = (uint8_t) (bit + '0');
-    /* Find the right tag to display. */
-    if (bit)
-    {
-        if ((tag = yeah) == NULL)
-            tag = "Set";
-    }
-    else
-    {
-        if ((tag = neigh) == NULL)
-            tag = "Not set";
-    }
-    /* Eh, voila! */
-    span_log(log, SPAN_LOG_FLOW, "  %s= %s: %s\n", s, desc, tag);
-}
-/*- End of function --------------------------------------------------------*/
-
-static void octet_field(logging_state_t *log,
-                        const uint8_t *msg,
-                        int start,
-                        int end,
-                        const char *desc,
-                        const value_string_t tags[])
-{
-    char s[10] = ".... ....";
-    int i;
-    uint8_t octet;
-    const char *tag;
-    
-    /* Break out the octet and the bit number range within it. */
-    octet = msg[((start - 1) >> 3) + 3];
-    start = (start - 1) & 7;
-    end = ((end - 1) & 7) + 1;
-
-    /* Edit the bit string for display. */
-    for (i = start;  i < end;  i++)
-        s[7 - i + ((i < 4)  ?  1  :  0)] = (uint8_t) ((octet >> i) & 1) + '0';
-
-    /* Find the right tag to display. */
-    octet = (uint8_t) ((octet >> start) & ((0xFF + (1 << (end - start))) & 0xFF));
-    tag = "Invalid";
-    for (i = 0;  tags[i].str;  i++)
-    {
-        if (octet == tags[i].val)
+    case SIG_STATUS_CARRIER_DOWN:
+        was_trained = s->rx_trained;
+        s->rx_signal_present = FALSE;
+        s->rx_trained = FALSE;
+        switch (s->state)
         {
-            tag = tags[i].str;
+        case T30_STATE_F_TCF:
+            /* Only respond if we managed to actually sync up with the source. We don't
+               want to respond just because we saw a click. These often occur just
+               before the real signal, with many modems. Presumably this is due to switching
+               within the far end modem. We also want to avoid the possibility of responding
+               to the tail end of any slow modem signal. If there was a genuine data signal
+               which we failed to train on it should not matter. If things are that bad, we
+               do not stand much chance of good quality communications. */
+            if (was_trained)
+            {
+                /* Although T.30 says the training test should be 1.5s of all 0's, some FAX
+                   machines send a burst of all 1's before the all 0's. Tolerate this. */
+                if (s->tcf_current_zeros > s->tcf_most_zeros)
+                    s->tcf_most_zeros = s->tcf_current_zeros;
+                span_log(&s->logging, SPAN_LOG_FLOW, "Trainability (TCF) test result - %d total bits. longest run of zeros was %d\n", s->tcf_test_bits, s->tcf_most_zeros);
+                if (s->tcf_most_zeros < fallback_sequence[s->current_fallback].bit_rate)
+                {
+                    span_log(&s->logging, SPAN_LOG_FLOW, "Trainability (TCF) test failed - longest run of zeros was %d\n", s->tcf_most_zeros);
+                    set_phase(s, T30_PHASE_B_TX);
+                    set_state(s, T30_STATE_F_FTT);
+                    send_simple_frame(s, T30_FTT);
+                }
+                else
+                {
+                    /* The training went OK */
+                    s->short_train = TRUE;
+                    s->in_message = TRUE;
+                    rx_start_page(s);
+                    set_phase(s, T30_PHASE_B_TX);
+                    set_state(s, T30_STATE_F_CFR);
+                    send_cfr_sequence(s, TRUE);
+                }
+            }
+            break;
+        case T30_STATE_F_POST_DOC_NON_ECM:
+            /* Page ended cleanly */
+            if (s->current_status == T30_ERR_RX_NOCARRIER)
+                s->current_status = T30_ERR_OK;
+            break;
+        default:
+            /* We should be receiving a document right now, but it did not end cleanly. */
+            if (was_trained)
+            {
+                span_log(&s->logging, SPAN_LOG_WARNING, "Page did not end cleanly\n");
+                /* We trained OK, so we should have some kind of received page, even though
+                   it did not end cleanly. */
+                set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
+                set_phase(s, T30_PHASE_D_RX);
+                timer_t2_start(s);
+                if (s->current_status == T30_ERR_RX_NOCARRIER)
+                    s->current_status = T30_ERR_OK;
+            }
+            else
+            {
+                span_log(&s->logging, SPAN_LOG_WARNING, "Non-ECM carrier not found\n");
+                s->current_status = T30_ERR_RX_NOCARRIER;
+            }
             break;
         }
+        if (s->next_phase != T30_PHASE_IDLE)
+        {
+            set_phase(s, s->next_phase);
+            s->next_phase = T30_PHASE_IDLE;
+        }
+        break;
+    default:
+        span_log(&s->logging, SPAN_LOG_WARNING, "Unexpected non-ECM rx status - %d!\n", status);
+        break;
     }
-    /* Eh, voila! */
-    span_log(log, SPAN_LOG_FLOW, "  %s= %s: %s\n", s, desc, tag);
 }
 /*- End of function --------------------------------------------------------*/
 
-void t30_decode_dis_dtc_dcs(t30_state_t *s, const uint8_t *pkt, int len)
+SPAN_DECLARE_NONSTD(void) t30_non_ecm_put_bit(void *user_data, int bit)
 {
-    logging_state_t *log;
-    uint8_t frame_type;
-    static const value_string_t available_signalling_rate_tags[] =
-    {
-        { 0x00, "V.27 ter fall-back mode" },
-        { 0x01, "V.29" },
-        { 0x02, "V.27 ter" },
-        { 0x03, "V.27 ter and V.29" },
-        { 0x0B, "V.27 ter, V.29, and V.17" },
-        { 0x06, "Reserved" },
-        { 0x0A, "Reserved" },
-        { 0x0E, "Reserved" },
-        { 0x0F, "Reserved" },
-        { 0x04, "Not used" },
-        { 0x05, "Not used" },
-        { 0x08, "Not used" },
-        { 0x09, "Not used" },
-        { 0x0C, "Not used" },
-        { 0x0D, "Not used" },
-        { 0x00, NULL }
-    };
-    static const value_string_t selected_signalling_rate_tags[] =
-    {
-        { 0x00, "V.27ter 2400bps" },
-        { 0x01, "V.29, 9600bps" },
-        { 0x02, "V.27ter 4800bps" },
-        { 0x03, "V.29 7200bps" },
-        { 0x08, "V.17 14400bps" },
-        { 0x09, "V.17 9600bps" },
-        { 0x0A, "V.17 12000bps" },
-        { 0x0B, "V.17 7200bps" },
-        { 0x05, "Reserved" },
-        { 0x07, "Reserved" },
-        { 0x0C, "Reserved" },
-        { 0x0D, "Reserved" },
-        { 0x0E, "Reserved" },
-        { 0x0F, "Reserved" },
-        { 0x00, NULL }
-    };
-    static const value_string_t available_scan_line_length_tags[] =
-    {
-        { 0x00, "215mm +- 1%" },
-        { 0x01, "215mm +- 1% and 255mm +- 1%" },
-        { 0x02, "215mm +- 1%, 255mm +- 1% and 303mm +- 1%" },
-        { 0x00, NULL }
-    };
-    static const value_string_t selected_scan_line_length_tags[] =
-    {
-        { 0x00, "215mm +- 1%" },
-        { 0x01, "255mm +- 1%" },
-        { 0x02, "303mm +- 1%" },
-        { 0x00, NULL }
-    };
-    static const value_string_t available_recording_length_tags[] =
-    {
-        { 0x00, "A4 (297mm)" },
-        { 0x01, "A4 (297mm) and B4 (364mm)" },
-        { 0x02, "Unlimited" },
-        { 0x00, NULL }
-    };
-    static const value_string_t selected_recording_length_tags[] =
-    {
-        { 0x00, "A4 (297mm)" },
-        { 0x01, "B4 (364mm)" },
-        { 0x02, "Unlimited" },
-        { 0x00, NULL }
-    };
-    static const value_string_t available_minimum_scan_line_time_tags[] =
-    {
-        { 0x00, "20ms at 3.85 l/mm; T7.7 = T3.85" },
-        { 0x01, "5ms at 3.85 l/mm; T7.7 = T3.85" },
-        { 0x02, "10ms at 3.85 l/mm; T7.7 = T3.85" },
-        { 0x03, "20ms at 3.85 l/mm; T7.7 = 1/2 T3.85" },
-        { 0x04, "40ms at 3.85 l/mm; T7.7 = T3.85" },
-        { 0x05, "40ms at 3.85 l/mm; T7.7 = 1/2 T3.85" },
-        { 0x06, "10ms at 3.85 l/mm; T7.7 = 1/2 T3.85" },
-        { 0x07, "0ms at 3.85 l/mm; T7.7 = T3.85" },
-        { 0x00, NULL }
-    };
-    static const value_string_t selected_minimum_scan_line_time_tags[] =
-    {
-        { 0x00, "20ms" },
-        { 0x01, "5ms" },
-        { 0x02, "10ms" },
-        { 0x04, "40ms" },
-        { 0x07, "0ms" },
-        { 0x00, NULL }
-    };
-    static const value_string_t shared_data_memory_capacity_tags[] =
-    {
-        { 0x00, "Not available" },
-        { 0x01, "Level 2 = 2.0 Mbytes" },
-        { 0x02, "Level 1 = 1.0 Mbytes" },
-        { 0x03, "Level 3 = unlimited (i.e. >= 32 Mbytes)" },
-        { 0x00, NULL }
-    };
-    static const value_string_t t89_profile_tags[] =
-    {
-        { 0x00, "Not used" },
-        { 0x01, "Profiles 2 and 3" },
-        { 0x02, "Profile 2" },
-        { 0x04, "Profile 1" },
-        { 0x06, "Profile 3" },
-        { 0x03, "Reserved" },
-        { 0x05, "Reserved" },
-        { 0x07, "Reserved" },
-        { 0x00, NULL }
-    };
-    static const value_string_t t44_mixed_raster_content_tags[] =
-    {
-        { 0x00, "0" },
-        { 0x01, "1" },
-        { 0x02, "2" },
-        { 0x32, "3" },
-        { 0x04, "4" },
-        { 0x05, "5" },
-        { 0x06, "6" },
-        { 0x07, "7" },
-        { 0x00, NULL }
-    };
+    t30_state_t *s;
 
-    if (!span_log_test(&s->logging, SPAN_LOG_FLOW))
-        return;
-    frame_type = pkt[2] & 0xFE;
-    log = &s->logging;
-    if (len <= 2)
+    if (bit < 0)
     {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
+        t30_non_ecm_rx_status(user_data, bit);
         return;
     }
+    s = (t30_state_t *) user_data;
+    switch (s->state)
+    {
+    case T30_STATE_F_TCF:
+        /* Trainability test */
+        s->tcf_test_bits++;
+        if (bit)
+        {
+            if (s->tcf_current_zeros > s->tcf_most_zeros)
+                s->tcf_most_zeros = s->tcf_current_zeros;
+            s->tcf_current_zeros = 0;
+        }
+        else
+        {
+            s->tcf_current_zeros++;
+        }
+        break;
+    case T30_STATE_F_DOC_NON_ECM:
+        /* Document transfer */
+        if (t4_rx_put_bit(&s->t4, bit))
+        {
+            /* That is the end of the document */
+            set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
+            queue_phase(s, T30_PHASE_D_RX);
+            timer_t2_start(s);
+        }
+        break;
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) t30_non_ecm_put_byte(void *user_data, int byte)
+{
+    t30_state_t *s;
+
+    s = (t30_state_t *) user_data;
+    switch (s->state)
+    {
+    case T30_STATE_F_TCF:
+        /* Trainability test */
+        /* This makes counting zeros fast, but approximate. That really doesn't matter */
+        s->tcf_test_bits += 8;
+        if (byte)
+        {
+            if (s->tcf_current_zeros > s->tcf_most_zeros)
+                s->tcf_most_zeros = s->tcf_current_zeros;
+            s->tcf_current_zeros = 0;
+        }
+        else
+        {
+            s->tcf_current_zeros += 8;
+        }
+        break;
+    case T30_STATE_F_DOC_NON_ECM:
+        /* Document transfer */
+        if (t4_rx_put_byte(&s->t4, (uint8_t) byte))
+        {
+            /* That is the end of the document */
+            set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
+            queue_phase(s, T30_PHASE_D_RX);
+            timer_t2_start(s);
+        }
+        break;
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) t30_non_ecm_put_chunk(void *user_data, const uint8_t buf[], int len)
+{
+    t30_state_t *s;
+    int i;
+
+    s = (t30_state_t *) user_data;
+    switch (s->state)
+    {
+    case T30_STATE_F_TCF:
+        /* Trainability test */
+        /* This makes counting zeros fast, but approximate. That really doesn't matter */
+        s->tcf_test_bits += 8*len;
+        for (i = 0;  i < len;  i++)
+        {
+            if (buf[i])
+            {
+                if (s->tcf_current_zeros > s->tcf_most_zeros)
+                    s->tcf_most_zeros = s->tcf_current_zeros;
+                s->tcf_current_zeros = 0;
+            }
+            else
+            {
+                s->tcf_current_zeros += 8;
+            }
+        }
+        break;
+    case T30_STATE_F_DOC_NON_ECM:
+        /* Document transfer */
+        if (t4_rx_put_chunk(&s->t4, buf, len))
+        {
+            /* That is the end of the document */
+            set_state(s, T30_STATE_F_POST_DOC_NON_ECM);
+            queue_phase(s, T30_PHASE_D_RX);
+            timer_t2_start(s);
+        }
+        break;
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE_NONSTD(int) t30_non_ecm_get_bit(void *user_data)
+{
+    int bit;
+    t30_state_t *s;
+
+    s = (t30_state_t *) user_data;
+    switch (s->state)
+    {
+    case T30_STATE_D_TCF:
+        /* Trainability test. */
+        bit = 0;
+        if (s->tcf_test_bits-- < 0)
+        {
+            /* Finished sending training test. */
+            bit = SIG_STATUS_END_OF_DATA;
+        }
+        break;
+    case T30_STATE_I:
+        /* Transferring real data. */
+        bit = t4_tx_get_bit(&s->t4);
+        break;
+    case T30_STATE_D_POST_TCF:
+    case T30_STATE_II_Q:
+        /* We should be padding out a block of samples if we are here */
+        bit = 0;
+        break;
+    default:
+        span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_bit in bad state %d\n", s->state);
+        bit = SIG_STATUS_END_OF_DATA;
+        break;
+    }
+    return bit;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) t30_non_ecm_get_byte(void *user_data)
+{
+    int byte;
+    t30_state_t *s;
+
+    s = (t30_state_t *) user_data;
+    switch (s->state)
+    {
+    case T30_STATE_D_TCF:
+        /* Trainability test. */
+        byte = 0;
+        if ((s->tcf_test_bits -= 8) < 0)
+        {
+            /* Finished sending training test. */
+            byte = 0x100;
+        }
+        break;
+    case T30_STATE_I:
+        /* Transferring real data. */
+        byte = t4_tx_get_byte(&s->t4);
+        break;
+    case T30_STATE_D_POST_TCF:
+    case T30_STATE_II_Q:
+        /* We should be padding out a block of samples if we are here */
+        byte = 0;
+        break;
+    default:
+        span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_byte in bad state %d\n", s->state);
+        byte = 0x100;
+        break;
+    }
+    return byte;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) t30_non_ecm_get_chunk(void *user_data, uint8_t buf[], int max_len)
+{
+    int len;
+    t30_state_t *s;
+
+    s = (t30_state_t *) user_data;
+    switch (s->state)
+    {
+    case T30_STATE_D_TCF:
+        /* Trainability test. */
+        for (len = 0;  len < max_len;  len++)
+        {
+            buf[len] = 0;
+            if ((s->tcf_test_bits -= 8) < 0)
+                break;
+        }
+        break;
+    case T30_STATE_I:
+        /* Transferring real data. */
+        len = t4_tx_get_chunk(&s->t4, buf, max_len);
+        break;
+    case T30_STATE_D_POST_TCF:
+    case T30_STATE_II_Q:
+        /* We should be padding out a block of samples if we are here */
+        len = 0;
+        break;
+    default:
+        span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_chunk in bad state %d\n", s->state);
+        len = 0;
+        break;
+    }
+    return len;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void t30_hdlc_rx_status(void *user_data, int status)
+{
+    t30_state_t *s;
+    int was_trained;
+
+    s = (t30_state_t *) user_data;
+    span_log(&s->logging, SPAN_LOG_FLOW, "HDLC signal status is %s (%d) in state %d\n", signal_status_to_str(status), status, s->state);
+    switch (status)
+    {
+    case SIG_STATUS_TRAINING_IN_PROGRESS:
+        break;
+    case SIG_STATUS_TRAINING_FAILED:
+        s->rx_trained = FALSE;
+        break;
+    case SIG_STATUS_TRAINING_SUCCEEDED:
+        /* The modem is now trained */
+        s->rx_signal_present = TRUE;
+        s->rx_trained = TRUE;
+        break;
+    case SIG_STATUS_CARRIER_UP:
+        s->rx_signal_present = TRUE;
+        switch (s->timer_t2_t4_is)
+        {
+        case TIMER_IS_T2B:
+            timer_t2_t4_stop(s);
+            s->timer_t2_t4_is = TIMER_IS_T2C;
+            break;
+        case TIMER_IS_T4B:
+            timer_t2_t4_stop(s);
+            s->timer_t2_t4_is = TIMER_IS_T4C;
+            break;
+        }
+        break;
+    case SIG_STATUS_CARRIER_DOWN:
+        was_trained = s->rx_trained;
+        s->rx_signal_present = FALSE;
+        s->rx_trained = FALSE;
+        /* If a phase change has been queued to occur after the receive signal drops,
+           its time to change. */
+        if (s->state == T30_STATE_F_DOC_ECM)
+        {
+            /* We should be receiving a document right now, but we haven't seen an RCP at the end of
+               transmission. */
+            if (was_trained)
+            {
+                /* We trained OK, so we should have some kind of received page, possibly with
+                   zero good HDLC frames. It just did'nt end cleanly with an RCP. */
+                span_log(&s->logging, SPAN_LOG_WARNING, "ECM signal did not end cleanly\n");
+                /* Fake the existance of an RCP, and proceed */
+                set_state(s, T30_STATE_F_POST_DOC_ECM);
+                queue_phase(s, T30_PHASE_D_RX);
+                timer_t2_start(s);
+                /* We at least trained, so any missing carrier status is out of date */
+                if (s->current_status == T30_ERR_RX_NOCARRIER)
+                    s->current_status = T30_ERR_OK;
+            }
+            else
+            {
+                /* Either there was no image carrier, or we failed to train to it. */
+                span_log(&s->logging, SPAN_LOG_WARNING, "ECM carrier not found\n");
+                s->current_status = T30_ERR_RX_NOCARRIER;
+            }
+        }
+        if (s->next_phase != T30_PHASE_IDLE)
+        {
+            /* The appropriate timer for the next phase should already be in progress */
+            set_phase(s, s->next_phase);
+            s->next_phase = T30_PHASE_IDLE;
+        }
+        else
+        {
+            switch (s->timer_t2_t4_is)
+            {
+            case TIMER_IS_T1A:
+            case TIMER_IS_T2A:
+            case TIMER_IS_T2C:
+                timer_t2b_start(s);
+                break;
+            case TIMER_IS_T4A:
+            case TIMER_IS_T4C:
+                timer_t4b_start(s);
+                break;
+            }
+        }
+        break;
+    case SIG_STATUS_FRAMING_OK:
+        if (!s->far_end_detected  &&  s->timer_t0_t1 > 0)
+        {
+            s->timer_t0_t1 = ms_to_samples(DEFAULT_TIMER_T1);
+            s->far_end_detected = TRUE;
+            if (s->phase == T30_PHASE_A_CED  ||  s->phase == T30_PHASE_A_CNG)
+                set_phase(s, T30_PHASE_B_RX);
+        }
+        /* 5.4.3.1 Timer T2 is reset if flag is received. Timer T2A must be started. */
+        /* Unstated, but implied, is that timer T4 and T4A are handled the same way. */
+        if (s->timer_t2_t4 > 0)
+        {
+            switch(s->timer_t2_t4_is)
+            {
+            case TIMER_IS_T1A:
+            case TIMER_IS_T2:
+            case TIMER_IS_T2A:
+                timer_t2a_start(s);
+                break;
+            case TIMER_IS_T4:
+            case TIMER_IS_T4A:
+                timer_t4a_start(s);
+                break;
+            }
+        }
+        break;
+    case SIG_STATUS_ABORT:
+        /* Just ignore these */
+        break;
+    default:
+        span_log(&s->logging, SPAN_LOG_FLOW, "Unexpected HDLC special length - %d!\n", status);
+        break;
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE_NONSTD(void) t30_hdlc_accept(void *user_data, const uint8_t *msg, int len, int ok)
+{
+    t30_state_t *s;
+
+    if (len < 0)
+    {
+        t30_hdlc_rx_status(user_data, len);
+        return;
+    }
+
+    s = (t30_state_t *) user_data;
+    /* The spec. says a command or response is not valid if:
+        - any of the frames, optional or mandatory, have an FCS error.
+        - any single frame exceeds 3s +- 15% (i.e. no frame should exceed 2.55s)
+        - the final frame is not tagged as a final frame
+        - the final frame is not a recognised one.
+       The first point seems benign. If we accept an optional frame, and a later
+       frame is bad, having accepted the optional frame should be harmless.
+       The 2.55s maximum seems to limit signalling frames to no more than 95 octets,
+       including FCS, and flag octets (assuming the use of V.21).
+    */
+    if (!ok)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Bad HDLC CRC received\n");
+        if (s->phase != T30_PHASE_C_ECM_RX)
+        {
+            /* We either force a resend, or we wait until a resend occurs through a timeout. */
+            if ((s->supported_t30_features & T30_SUPPORT_COMMAND_REPEAT))
+            {
+                s->step = 0;
+                if (s->phase == T30_PHASE_B_RX)
+                    queue_phase(s, T30_PHASE_B_TX);
+                else
+                    queue_phase(s, T30_PHASE_D_TX);
+                send_simple_frame(s, T30_CRP);
+            }
+            else
+            {
+                /* Cancel the command or response timer (if one is running) */
+                span_log(&s->logging, SPAN_LOG_FLOW, "Bad CRC and timer is %d\n", s->timer_t2_t4_is);
+                if (s->timer_t2_t4_is == TIMER_IS_T2A)
+                    timer_t2_t4_stop(s);
+            }
+        }
+        return;
+    }
+
+    if (len < 3)
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Bad HDLC frame length - %d\n", len);
+        /* Cancel the command or response timer (if one is running) */
+        timer_t2_t4_stop(s);
+        return;
+    }
+    if (msg[0] != ADDRESS_FIELD
+        ||
+        !(msg[1] == CONTROL_FIELD_NON_FINAL_FRAME  ||  msg[1] == CONTROL_FIELD_FINAL_FRAME))
+    {
+        span_log(&s->logging, SPAN_LOG_FLOW, "Bad HDLC frame header - %02x %02x\n", msg[0], msg[1]);
+        /* Cancel the command or response timer (if one is running) */
+        timer_t2_t4_stop(s);
+        return;
+    }
+    s->rx_frame_received = TRUE;
+    /* Cancel the command or response timer (if one is running) */
+    timer_t2_t4_stop(s);
+    process_rx_control_msg(s, msg, len);
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
+{
+    t30_state_t *s;
     
-    span_log(log, SPAN_LOG_FLOW, "%s:\n", t30_frametype(pkt[2]));
-    if (len <= 3)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-    octet_bit_field(log, pkt, 1, "Store and forward Internet fax (T.37)", NULL, NULL);
-    octet_reserved_bit(log, pkt, 2, 0);
-    octet_bit_field(log, pkt, 3, "Real-time Internet fax (T.38)", NULL, NULL);
-    octet_bit_field(log, pkt, 4, "3G mobile network", NULL, NULL);
-    octet_reserved_bit(log, pkt, 5, 0);
-    if (frame_type == T30_DCS)
-    {
-        octet_reserved_bit(log, pkt, 6, 0);
-        octet_reserved_bit(log, pkt, 7, 0);
-    }
-    else
-    {
-        octet_bit_field(log, pkt, 6, "V.8 capabilities", NULL, NULL);
-        octet_bit_field(log, pkt, 7, "Preferred octets", "64 octets", "256 octets");
-    }
-    octet_reserved_bit(log, pkt, 8, 0);
-    if (len <= 4)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-    
-    if (frame_type == T30_DCS)
-    {
-        octet_reserved_bit(log, pkt, 9, 0);
-        octet_bit_field(log, pkt, 10, "Receive fax", NULL, NULL);
-        octet_field(log, pkt, 11, 14, "Selected data signalling rate", selected_signalling_rate_tags);
-    }
-    else
-    {
-        octet_bit_field(log, pkt, 9, "Ready to transmit a fax document (polling)", NULL, NULL);
-        octet_bit_field(log, pkt, 10, "Can receive fax", NULL, NULL);
-        octet_field(log, pkt, 11, 14, "Supported data signalling rates", available_signalling_rate_tags);
-    }
-    octet_bit_field(log, pkt, 15, "R8x7.7lines/mm and/or 200x200pels/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 16, "2-D coding", NULL, NULL);
-    if (len <= 5)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
+    s = (t30_state_t *) user_data;
 
-    if (frame_type == T30_DCS)
+    switch (status)
     {
-        octet_field(log, pkt, 17, 18, "Recording width", selected_scan_line_length_tags);
-        octet_field(log, pkt, 19, 20, "Recording length", selected_recording_length_tags);
-        octet_field(log, pkt, 21, 23, "Minimum scan line time", selected_minimum_scan_line_time_tags);
+    case T30_FRONT_END_SEND_STEP_COMPLETE:
+        span_log(&s->logging, SPAN_LOG_FLOW, "Send complete in phase %s, state %d\n", phase_names[s->phase], s->state);
+        /* We have finished sending our messages, so move on to the next operation. */
+        switch (s->state)
+        {
+        case T30_STATE_ANSWERING:
+            span_log(&s->logging, SPAN_LOG_FLOW, "Starting answer mode\n");
+            set_phase(s, T30_PHASE_B_TX);
+            timer_t2_start(s);
+            s->dis_received = FALSE;
+            send_dis_or_dtc_sequence(s, TRUE);
+            break;
+        case T30_STATE_R:
+            if (send_dis_or_dtc_sequence(s, FALSE))
+            {
+                /* Wait for an acknowledgement. */
+                set_phase(s, T30_PHASE_B_RX);
+                timer_t4_start(s);
+            }
+            break;
+        case T30_STATE_F_CFR:
+            if (s->step == 0)
+            {
+                /* Shut down HDLC transmission. */
+                if (s->send_hdlc_handler)
+                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                s->step++;
+            }
+            else
+            {
+                if (s->error_correcting_mode)
+                {
+                    set_state(s, T30_STATE_F_DOC_ECM);
+                    queue_phase(s, T30_PHASE_C_ECM_RX);
+                }
+                else
+                {
+                    set_state(s, T30_STATE_F_DOC_NON_ECM);
+                    queue_phase(s, T30_PHASE_C_NON_ECM_RX);
+                }
+                timer_t2_start(s);
+                s->next_rx_step = T30_MPS;
+            }
+            break;
+        case T30_STATE_F_FTT:
+            if (s->step == 0)
+            {
+                /* Shut down HDLC transmission. */
+                if (s->send_hdlc_handler)
+                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                s->step++;
+            }
+            else
+            {
+                set_phase(s, T30_PHASE_B_RX);
+                timer_t2_start(s);
+            }
+            break;
+        case T30_STATE_III_Q_MCF:
+        case T30_STATE_III_Q_RTP:
+        case T30_STATE_III_Q_RTN:
+        case T30_STATE_F_POST_RCP_PPR:
+        case T30_STATE_F_POST_RCP_MCF:
+            if (s->step == 0)
+            {
+                /* Shut down HDLC transmission. */
+                if (s->send_hdlc_handler)
+                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                s->step++;
+            }
+            else
+            {
+                switch (s->next_rx_step)
+                {
+                case T30_MPS:
+                case T30_PRI_MPS:
+                    /* We should now start to get another page */
+                    if (s->error_correcting_mode)
+                    {
+                        set_state(s, T30_STATE_F_DOC_ECM);
+                        queue_phase(s, T30_PHASE_C_ECM_RX);
+                    }
+                    else
+                    {
+                        set_state(s, T30_STATE_F_DOC_NON_ECM);
+                        queue_phase(s, T30_PHASE_C_NON_ECM_RX);
+                    }
+                    timer_t2_start(s);
+                    break;
+                case T30_EOM:
+                case T30_PRI_EOM:
+                case T30_EOS:
+                    /* See if we get something back, before moving to phase B. */
+                    timer_t2_start(s);
+                    set_phase(s, T30_PHASE_D_RX);
+                    break;
+                case T30_EOP:
+                case T30_PRI_EOP:
+                    /* Wait for a DCN. */
+                    set_phase(s, T30_PHASE_D_RX);
+                    timer_t4_start(s);
+                    break;
+                default:
+                    span_log(&s->logging, SPAN_LOG_FLOW, "Unknown next rx step - %d\n", s->next_rx_step);
+                    disconnect(s);
+                    break;
+                }
+            }
+            break;
+        case T30_STATE_II_Q:
+        case T30_STATE_IV_PPS_NULL:
+        case T30_STATE_IV_PPS_Q:
+        case T30_STATE_IV_PPS_RNR:
+        case T30_STATE_IV_EOR_RNR:
+        case T30_STATE_F_POST_RCP_RNR:
+        case T30_STATE_IV_EOR:
+        case T30_STATE_IV_CTC:
+            if (s->step == 0)
+            {
+                /* Shut down HDLC transmission. */
+                if (s->send_hdlc_handler)
+                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                s->step++;
+            }
+            else
+            {
+                /* We have finished sending the post image message. Wait for an
+                   acknowledgement. */
+                set_phase(s, T30_PHASE_D_RX);
+                timer_t4_start(s);
+            }
+            break;
+        case T30_STATE_B:
+            /* We have now allowed time for the last message to flush through
+               the system, so it is safe to report the end of the call. */
+            if (s->phase_e_handler)
+                s->phase_e_handler(s, s->phase_e_user_data, s->current_status);
+            set_state(s, T30_STATE_CALL_FINISHED);
+            set_phase(s, T30_PHASE_CALL_FINISHED);
+            release_resources(s);
+            break;
+        case T30_STATE_C:
+            if (s->step == 0)
+            {
+                /* Shut down HDLC transmission. */
+                if (s->send_hdlc_handler)
+                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                s->step++;
+            }
+            else
+            {
+                /* We just sent the disconnect message. Now it is time to disconnect. */
+                disconnect(s);
+            }
+            break;
+        case T30_STATE_D:
+            if (send_dcs_sequence(s, FALSE))
+            {
+                if ((s->iaf & T30_IAF_MODE_NO_TCF))
+                {
+                    /* Skip the trainability test */
+                    s->retries = 0;
+                    s->short_train = TRUE;
+                    if (s->error_correcting_mode)
+                    {
+                        set_state(s, T30_STATE_IV);
+                        queue_phase(s, T30_PHASE_C_ECM_TX);
+                    }
+                    else
+                    {
+                        set_state(s, T30_STATE_I);
+                        queue_phase(s, T30_PHASE_C_NON_ECM_TX);
+                    }
+                }
+                else
+                {
+                    /* Do the trainability test */
+                    /* TCF is always sent with long training */
+                    s->short_train = FALSE;
+                    set_state(s, T30_STATE_D_TCF);
+                    set_phase(s, T30_PHASE_C_NON_ECM_TX);
+                }
+            }
+            break;
+        case T30_STATE_D_TCF:
+            /* Finished sending training test. Listen for the response. */
+            set_phase(s, T30_PHASE_B_RX);
+            timer_t4_start(s);
+            set_state(s, T30_STATE_D_POST_TCF);
+            break;
+        case T30_STATE_I:
+            /* Send the end of page message */
+            set_phase(s, T30_PHASE_D_TX);
+            set_state(s, T30_STATE_II_Q);
+            /* We might need to resend the page we are on, but we need to check if there
+               are any more pages to send, so we can send the correct signal right now. */
+            send_simple_frame(s, s->next_tx_step = check_next_tx_step(s));
+            break;
+        case T30_STATE_IV:
+            /* We have finished sending an FCD frame */
+            if (s->step == 0)
+            {
+                if (send_next_ecm_frame(s))
+                {
+                    /* Shut down HDLC transmission. */
+                    if (s->send_hdlc_handler)
+                        s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                    s->step++;
+                }
+            }
+            else
+            {
+                /* Send the end of page or partial page message */
+                set_phase(s, T30_PHASE_D_TX);
+                s->next_tx_step = check_next_tx_step(s);
+                if (send_pps_frame(s) == T30_NULL)
+                    set_state(s, T30_STATE_IV_PPS_NULL);
+                else
+                    set_state(s, T30_STATE_IV_PPS_Q);
+            }
+            break;
+        case T30_STATE_F_DOC_ECM:
+            /* This should be the end of a CTR being sent. */
+            if (s->step == 0)
+            {
+                /* Shut down HDLC transmission. */
+                if (s->send_hdlc_handler)
+                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                s->step++;
+            }
+            else
+            {
+                /* We have finished sending the CTR. Wait for image data again. */
+                queue_phase(s, T30_PHASE_C_ECM_RX);
+                timer_t2_start(s);
+            }
+            break;
+        case T30_STATE_CALL_FINISHED:
+            /* Just ignore anything that happens now. We might get here if a premature
+               disconnect from the far end overlaps something. */
+            break;
+        default:
+            span_log(&s->logging, SPAN_LOG_FLOW, "Bad state for send complete in t30_front_end_status - %d\n", s->state);
+            break;
+        }
+        break;
+    case T30_FRONT_END_RECEIVE_COMPLETE:
+        span_log(&s->logging, SPAN_LOG_FLOW, "Receive complete in phase %s, state %d\n", phase_names[s->phase], s->state);
+        /* Usually receive complete is notified by a carrier down signal. However,
+           in cases like a T.38 packet stream dying in the middle of reception
+           there needs to be a means to stop things. */
+        switch (s->phase)
+        {
+        case T30_PHASE_C_NON_ECM_RX:
+            t30_non_ecm_rx_status(s, SIG_STATUS_CARRIER_DOWN);
+            break;
+        default:
+            t30_hdlc_rx_status(s, SIG_STATUS_CARRIER_DOWN);
+            break;
+        }
+        break;
+    case T30_FRONT_END_SIGNAL_PRESENT:
+        span_log(&s->logging, SPAN_LOG_FLOW, "A signal is present\n");
+        /* The front end is explicitly telling us the signal we expect is present. This might
+           be a premature indication from a T.38 implementation, but we have to believe it.
+           if we don't we can time out improperly. For example, we might get an image modem
+           carrier signal, but the first HDLC frame might only occur several seconds later.
+           Many ECM senders idle on HDLC flags while waiting for the paper or filing system
+           to become ready. T.38 offers no specific indication of correct carrier training, so
+           if we don't kill the timer on the initial carrier starting signal, we will surely
+           time out quite often before the next thing we receive. */
+        switch (s->phase)
+        {
+        case T30_PHASE_A_CED:
+        case T30_PHASE_A_CNG:
+        case T30_PHASE_B_RX:
+        case T30_PHASE_D_RX:
+            /* We are running a V.21 receive modem, where an explicit training indication
+               will not occur. */
+            t30_hdlc_rx_status(s, SIG_STATUS_CARRIER_UP);
+            t30_hdlc_rx_status(s, SIG_STATUS_FRAMING_OK);
+            break;
+        default:
+            /* Cancel any receive timeout, and declare that a receive signal is present,
+               since the front end is explicitly telling us we have seen something. */
+            s->rx_signal_present = TRUE;
+            timer_t2_t4_stop(s);
+            break;
+        }
+        break;
+    case T30_FRONT_END_SIGNAL_ABSENT:
+        span_log(&s->logging, SPAN_LOG_FLOW, "No signal is present\n");
+        /* TODO: Should we do anything here? */
+        break;
+    case T30_FRONT_END_CED_PRESENT:
+        span_log(&s->logging, SPAN_LOG_FLOW, "CED tone is present\n");
+        /* TODO: Should we do anything here? */
+        break;
+    case T30_FRONT_END_CNG_PRESENT:
+        span_log(&s->logging, SPAN_LOG_FLOW, "CNG tone is present\n");
+        /* TODO: Should we do anything here? */
+        break;
     }
-    else
-    {
-        octet_field(log, pkt, 17, 18, "Recording width", available_scan_line_length_tags);
-        octet_field(log, pkt, 19, 20, "Recording length", available_recording_length_tags);
-        octet_field(log, pkt, 21, 23, "Receiver's minimum scan line time", available_minimum_scan_line_time_tags);
-    }
-    octet_bit_field(log, pkt, 24, "Extension indicator", NULL, NULL);
-    if (!(pkt[5] & DISBIT8))
-        return;
-    if (len <= 6)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_reserved_bit(log, pkt, 25, 0);
-    octet_bit_field(log, pkt, 26, "Compressed/uncompressed mode", "Uncompressed", "Compressed");
-    octet_bit_field(log, pkt, 27, "Error correction mode (ECM)", "ECM", "Non-ECM");
-    if (frame_type == T30_DCS)
-        octet_bit_field(log, pkt, 28, "Frame size", "64 octets", "256 octets");
-    else
-        octet_reserved_bit(log, pkt, 28, 0);
-    octet_reserved_bit(log, pkt, 29, 0);
-    octet_reserved_bit(log, pkt, 30, 0);
-    octet_bit_field(log, pkt, 31, "T.6 coding", NULL, NULL);
-    octet_bit_field(log, pkt, 32, "Extension indicator", NULL, NULL);
-    if (!(pkt[6] & DISBIT8))
-        return;
-    if (len <= 7)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 33, "\"Field not valid\" supported", NULL, NULL);
-    if (frame_type == T30_DCS)
-    {
-        octet_reserved_bit(log, pkt, 34, 0);
-        octet_reserved_bit(log, pkt, 35, 0);
-    }
-    else
-    {
-        octet_bit_field(log, pkt, 34, "Multiple selective polling", NULL, NULL);
-        octet_bit_field(log, pkt, 35, "Polled subaddress", NULL, NULL);
-    }
-    octet_bit_field(log, pkt, 36, "T.43 coding", NULL, NULL);
-    octet_bit_field(log, pkt, 37, "Plane interleave", NULL, NULL);
-    octet_bit_field(log, pkt, 38, "Voice coding with 32kbit/s ADPCM (Rec. G.726)", NULL, NULL);
-    octet_bit_field(log, pkt, 39, "Reserved for the use of extended voice coding set", NULL, NULL);
-    octet_bit_field(log, pkt, 40, "Extension indicator", NULL, NULL);
-    if (!(pkt[7] & DISBIT8))
-        return;
-    if (len <= 8)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-    octet_bit_field(log, pkt, 41, "R8x15.4lines/mm", NULL, NULL);
-    octet_bit_field(log, pkt, 42, "300x300pels/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 43, "R16x15.4lines/mm and/or 400x400pels/25.4mm", NULL, NULL);
-    if (frame_type == T30_DCS)
-    {
-        octet_bit_field(log, pkt, 44, "Resolution type selection", "Inch", "Metric");
-        octet_reserved_bit(log, pkt, 45, 0);
-        octet_reserved_bit(log, pkt, 46, 0);
-        octet_reserved_bit(log, pkt, 47, 0);
-    }
-    else
-    {
-        octet_bit_field(log, pkt, 44, "Inch-based resolution preferred", NULL, NULL);
-        octet_bit_field(log, pkt, 45, "Metric-based resolution preferred", NULL, NULL);
-        octet_bit_field(log, pkt, 46, "Minimum scan line time for higher resolutions", "T15.4 = 1/2 T7.7", "T15.4 = T7.7");
-        octet_bit_field(log, pkt, 47, "Selective polling", NULL, NULL);
-    }
-    octet_bit_field(log, pkt, 48, "Extension indicator", NULL, NULL);
-    if (!(pkt[8] & DISBIT8))
-        return;
-    if (len <= 9)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 49, "Subaddressing", NULL, NULL);
-    if (frame_type == T30_DCS)
-    {
-        octet_bit_field(log, pkt, 50, "Sender identification transmission", NULL, NULL);
-        octet_reserved_bit(log, pkt, 51, 0);
-    }
-    else
-    {
-        octet_bit_field(log, pkt, 50, "Password", NULL, NULL);
-        octet_bit_field(log, pkt, 51, "Ready to transmit a data file (polling)", NULL, NULL);
-    }
-    octet_reserved_bit(log, pkt, 52, 0);
-    octet_bit_field(log, pkt, 53, "Binary file transfer (BFT)", NULL, NULL);
-    octet_bit_field(log, pkt, 54, "Document transfer mode (DTM)", NULL, NULL);
-    octet_bit_field(log, pkt, 55, "Electronic data interchange (EDI)", NULL, NULL);
-    octet_bit_field(log, pkt, 56, "Extension indicator", NULL, NULL);
-    if (!(pkt[9] & DISBIT8))
-        return;
-    if (len <= 10)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 57, "Basic transfer mode (BTM)", NULL, NULL);
-    octet_reserved_bit(log, pkt, 58, 0);
-    if (frame_type == T30_DCS)
-        octet_reserved_bit(log, pkt, 59, 0);
-    else
-        octet_bit_field(log, pkt, 59, "Ready to transfer a character or mixed mode document (polling)", NULL, NULL);
-    octet_bit_field(log, pkt, 60, "Character mode", NULL, NULL);
-    octet_reserved_bit(log, pkt, 61, 0);
-    octet_bit_field(log, pkt, 62, "Mixed mode (Annex E/T.4)", NULL, NULL);
-    octet_reserved_bit(log, pkt, 63, 0);
-    octet_bit_field(log, pkt, 64, "Extension indicator", NULL, NULL);
-    if (!(pkt[10] & DISBIT8))
-        return;
-    if (len <= 11)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 65, "Processable mode 26 (Rec. T.505)", NULL, NULL);
-    octet_bit_field(log, pkt, 66, "Digital network capability", NULL, NULL);
-    octet_bit_field(log, pkt, 67, "Duplex capability", "Full", "Half only");
-    if (frame_type == T30_DCS)
-        octet_bit_field(log, pkt, 68, "Full colour mode", NULL, NULL);
-    else
-        octet_bit_field(log, pkt, 68, "JPEG coding", NULL, NULL);
-    octet_bit_field(log, pkt, 69, "Full colour mode", NULL, NULL);
-    if (frame_type == T30_DCS)
-        octet_bit_field(log, pkt, 70, "Preferred Huffman tables", NULL, NULL);
-    else
-        octet_reserved_bit(log, pkt, 70, 0);
-    octet_bit_field(log, pkt, 71, "12bits/pel component", NULL, NULL);
-    octet_bit_field(log, pkt, 72, "Extension indicator", NULL, NULL);
-    if (!(pkt[11] & DISBIT8))
-        return;
-    if (len <= 12)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 73, "No subsampling (1:1:1)", NULL, NULL);
-    octet_bit_field(log, pkt, 74, "Custom illuminant", NULL, NULL);
-    octet_bit_field(log, pkt, 75, "Custom gamut range", NULL, NULL);
-    octet_bit_field(log, pkt, 76, "North American Letter (215.9mm x 279.4mm)", NULL, NULL);
-    octet_bit_field(log, pkt, 77, "North American Legal (215.9mm x 355.6mm)", NULL, NULL);
-    octet_bit_field(log, pkt, 78, "Single-progression sequential coding (Rec. T.85) basic", NULL, NULL);
-    octet_bit_field(log, pkt, 79, "Single-progression sequential coding (Rec. T.85) optional L0", NULL, NULL);
-    octet_bit_field(log, pkt, 80, "Extension indicator", NULL, NULL);
-    if (!(pkt[12] & DISBIT8))
-        return;
-    if (len <= 13)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 81, "HKM key management", NULL, NULL);
-    octet_bit_field(log, pkt, 82, "RSA key management", NULL, NULL);
-    octet_bit_field(log, pkt, 83, "Override", NULL, NULL);
-    octet_bit_field(log, pkt, 84, "HFX40 cipher", NULL, NULL);
-    octet_bit_field(log, pkt, 85, "Alternative cipher number 2", NULL, NULL);
-    octet_bit_field(log, pkt, 86, "Alternative cipher number 3", NULL, NULL);
-    octet_bit_field(log, pkt, 87, "HFX40-I hashing", NULL, NULL);
-    octet_bit_field(log, pkt, 88, "Extension indicator", NULL, NULL);
-    if (!(pkt[13] & DISBIT8))
-        return;
-    if (len <= 14)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 89, "Alternative hashing system 2", NULL, NULL);
-    octet_bit_field(log, pkt, 90, "Alternative hashing system 3", NULL, NULL);
-    octet_bit_field(log, pkt, 91, "Reserved for future security features", NULL, NULL);
-    octet_field(log, pkt, 92, 94, "T.44 (Mixed Raster Content)", t44_mixed_raster_content_tags);
-    octet_bit_field(log, pkt, 95, "Page length maximum stripe size for T.44 (Mixed Raster Content)", NULL, NULL);
-    octet_bit_field(log, pkt, 96, "Extension indicator", NULL, NULL);
-    if (!(pkt[14] & DISBIT8))
-        return;
-    if (len <= 15)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 97, "Colour/gray-scale 300pels/25.4mm x 300lines/25.4mm or 400pels/25.4mm x 400lines/25.4mm resolution", NULL, NULL);
-    octet_bit_field(log, pkt, 98, "100pels/25.4mm x 100lines/25.4mm for colour/gray scale", NULL, NULL);
-    octet_bit_field(log, pkt, 99, "Simple phase C BFT negotiations", NULL, NULL);
-    if (frame_type == T30_DCS)
-    {
-        octet_reserved_bit(log, pkt, 100, 0);
-        octet_reserved_bit(log, pkt, 101, 0);
-    }
-    else
-    {
-        octet_bit_field(log, pkt, 100, "Extended BFT Negotiations capable", NULL, NULL);
-        octet_bit_field(log, pkt, 101, "Internet Selective Polling address (ISP)", NULL, NULL);
-    }
-    octet_bit_field(log, pkt, 102, "Internet Routing Address (IRA)", NULL, NULL);
-    octet_reserved_bit(log, pkt, 103, 0);
-    octet_bit_field(log, pkt, 104, "Extension indicator", NULL, NULL);
-    if (!(pkt[15] & DISBIT8))
-        return;
-    if (len <= 16)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 105, "600pels/25.4mm x 600lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 106, "1200pels/25.4mm x 1200lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 107, "300pels/25.4mm x 600lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 108, "400pels/25.4mm x 800lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 109, "600pels/25.4mm x 1200lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 110, "Colour/gray scale 600pels/25.4mm x 600lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 111, "Colour/gray scale 1200pels/25.4mm x 1200lines/25.4mm", NULL, NULL);
-    octet_bit_field(log, pkt, 112, "Extension indicator", NULL, NULL);
-    if (!(pkt[16] & DISBIT8))
-        return;
-    if (len <= 17)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 113, "Double sided printing capability (alternate mode)", NULL, NULL);
-    octet_bit_field(log, pkt, 114, "Double sided printing capability (continuous mode)", NULL, NULL);
-    if (frame_type == T30_DCS)
-        octet_bit_field(log, pkt, 115, "Black and white mixed raster content profile (MRCbw)", NULL, NULL);
-    else
-        octet_reserved_bit(log, pkt, 115, 0);
-    octet_bit_field(log, pkt, 116, "T.45 (run length colour encoded)", NULL, NULL);
-    octet_field(log, pkt, 117, 118, "Shared memory", shared_data_memory_capacity_tags);
-    octet_bit_field(log, pkt, 119, "T.44 colour space", NULL, NULL);
-    octet_bit_field(log, pkt, 120, "Extension indicator", NULL, NULL);
-    if (!(pkt[17] & DISBIT8))
-        return;
-    if (len <= 18)
-    {
-        span_log(log, SPAN_LOG_FLOW, "  Frame is short\n");
-        return;
-    }
-
-    octet_bit_field(log, pkt, 121, "Flow control capability for T.38 communication", NULL, NULL);
-    octet_bit_field(log, pkt, 122, "K>4", NULL, NULL);
-    octet_bit_field(log, pkt, 123, "Internet aware T.38 mode fax (not affected by data signal rate bits)", NULL, NULL);
-    octet_field(log, pkt, 124, 126, "T.89 (Application profiles for ITU-T Rec T.8)", t89_profile_tags);
-    octet_bit_field(log, pkt, 127, "sYCC-JPEG coding", NULL, NULL);
-    octet_bit_field(log, pkt, 128, "Extension indicator", NULL, NULL);
-    if (!(pkt[18] & DISBIT8))
-        return;
-
-    span_log(log, SPAN_LOG_FLOW, "  Extended beyond the current T.30 specification!\n");
 }
 /*- End of function --------------------------------------------------------*/
 
-int t30_restart(t30_state_t *s)
+SPAN_DECLARE(void) t30_timer_update(t30_state_t *s, int samples)
 {
-    s->phase = T30_PHASE_IDLE;
-    s->next_phase = T30_PHASE_IDLE;
-    s->current_fallback = 0;
-    s->rx_signal_present = FALSE;
-    s->rx_trained = FALSE;
-    s->current_status = T30_ERR_OK;
-    s->ppr_count = 0;
-    s->receiver_not_ready_count = 0;
+    int previous;
 
-    build_dis_or_dtc(s);
-    if (s->calling_party)
+    if (s->timer_t0_t1 > 0)
     {
-        set_state(s, T30_STATE_T);
-        set_phase(s, T30_PHASE_A_CNG);
+        if ((s->timer_t0_t1 -= samples) <= 0)
+        {
+            s->timer_t0_t1 = 0;
+            if (s->far_end_detected)
+                timer_t1_expired(s);
+            else
+                timer_t0_expired(s);
+        }
     }
-    else
+    if (s->timer_t3 > 0)
     {
-        set_state(s, T30_STATE_ANSWERING);
-        set_phase(s, T30_PHASE_A_CED);
+        if ((s->timer_t3 -= samples) <= 0)
+        {
+            s->timer_t3 = 0;
+            timer_t3_expired(s);
+        }
     }
-    s->far_end_detected = FALSE;
-    s->timer_t0_t1 = ms_to_samples(DEFAULT_TIMER_T0);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-t30_state_t *t30_init(t30_state_t *s,
-                      int calling_party,
-                      t30_set_handler_t *set_rx_type_handler,
-                      void *set_rx_type_user_data,
-                      t30_set_handler_t *set_tx_type_handler,
-                      void *set_tx_type_user_data,
-                      t30_send_hdlc_handler_t *send_hdlc_handler,
-                      void *send_hdlc_user_data)
-{
-    if (s == NULL)
+    if (s->timer_t2_t4 > 0)
     {
-        if ((s = (t30_state_t *) malloc(sizeof(*s))) == NULL)
-            return NULL;
+        if ((s->timer_t2_t4 -= samples) <= 0)
+        {
+            previous = s->timer_t2_t4_is;
+            /* Don't allow the count to be left at a small negative number.
+               It looks cosmetically bad in the logs. */
+            s->timer_t2_t4 = 0;
+            s->timer_t2_t4_is = TIMER_IS_IDLE;
+            switch (previous)
+            {
+            case TIMER_IS_T1A:
+                timer_t1a_expired(s);
+                break;
+            case TIMER_IS_T2:
+                timer_t2_expired(s);
+                break;
+            case TIMER_IS_T2A:
+                timer_t2a_expired(s);
+                break;
+            case TIMER_IS_T2B:
+                timer_t2b_expired(s);
+                break;
+            case TIMER_IS_T4:
+                timer_t4_expired(s);
+                break;
+            case TIMER_IS_T4A:
+                timer_t4a_expired(s);
+                break;
+            case TIMER_IS_T4B:
+                timer_t4b_expired(s);
+                break;
+            }
+        }
     }
-    memset(s, 0, sizeof(*s));
-    s->calling_party = calling_party;
-    s->set_rx_type_handler = set_rx_type_handler;
-    s->set_rx_type_user_data = set_rx_type_user_data;
-    s->set_tx_type_handler = set_tx_type_handler;
-    s->set_tx_type_user_data = set_tx_type_user_data;
-    s->send_hdlc_handler = send_hdlc_handler;
-    s->send_hdlc_user_data = send_hdlc_user_data;
-
-    /* Default to the basic modems. */
-    s->supported_modems = T30_SUPPORT_V27TER | T30_SUPPORT_V29;
-    s->supported_compressions = T30_SUPPORT_T4_1D_COMPRESSION | T30_SUPPORT_T4_2D_COMPRESSION;
-    s->supported_resolutions = T30_SUPPORT_STANDARD_RESOLUTION | T30_SUPPORT_FINE_RESOLUTION | T30_SUPPORT_SUPERFINE_RESOLUTION
-                             | T30_SUPPORT_R8_RESOLUTION;
-    s->supported_image_sizes = T30_SUPPORT_US_LETTER_LENGTH | T30_SUPPORT_US_LEGAL_LENGTH | T30_SUPPORT_UNLIMITED_LENGTH
-                             | T30_SUPPORT_215MM_WIDTH;
-    /* Set the output encoding to something safe. Most things get 1D and 2D
-       encoding right. Quite a lot get other things wrong. */
-    s->output_encoding = T4_COMPRESSION_ITU_T4_2D;
-    span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
-    span_log_set_protocol(&s->logging, "T.30");
-    t30_restart(s);
-    return s;
+    if (s->timer_t5 > 0)
+    {
+        if ((s->timer_t5 -= samples) <= 0)
+        {
+            s->timer_t5 = 0;
+            timer_t5_expired(s);
+        }
+    }
 }
 /*- End of function --------------------------------------------------------*/
 
-int t30_release(t30_state_t *s)
-{
-    /* Make sure any FAX in progress is tidied up. If the tidying up has
-       already happened, repeating it here is harmless. */
-    t4_rx_end(&(s->t4));
-    t4_tx_end(&(s->t4));
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_free(t30_state_t *s)
-{
-    t30_release(s);
-    free(s);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_terminate(t30_state_t *s)
+SPAN_DECLARE(void) t30_terminate(t30_state_t *s)
 {
     if (s->phase != T30_PHASE_CALL_FINISHED)
     {
@@ -5764,128 +6119,21 @@ void t30_terminate(t30_state_t *s)
             s->phase_e_handler(s, s->phase_e_user_data, s->current_status);
         set_state(s, T30_STATE_CALL_FINISHED);
         set_phase(s, T30_PHASE_CALL_FINISHED);
+        release_resources(s);
     }
 }
 /*- End of function --------------------------------------------------------*/
 
-void t30_set_iaf_mode(t30_state_t *s, int iaf)
-{
-    s->iaf = iaf;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_header_info(t30_state_t *s, const char *info)
-{
-    if (info == NULL)
-    {
-        s->header_info[0] = '\0';
-        return 0;
-    }
-    if (strlen(info) > 50)
-        return -1;
-    strcpy(s->header_info, info);
-    t4_tx_set_header_info(&(s->t4), s->header_info);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_local_ident(t30_state_t *s, const char *id)
-{
-    if (id == NULL)
-    {
-        s->local_ident[0] = '\0';
-        return 0;
-    }
-    if (strlen(id) > 20)
-        return -1;
-    strcpy(s->local_ident, id);
-    t4_tx_set_local_ident(&(s->t4), s->local_ident);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_local_nsf(t30_state_t *s, const uint8_t *nsf, int len)
-{
-    if (len > T30_MAX_LOCAL_NSF_LEN)
-        return -1;
-    memcpy(s->local_nsf, nsf, len);
-    s->local_nsf_len = len;
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_local_sub_address(t30_state_t *s, const char *sub_address)
-{
-    if (sub_address == NULL)
-    {
-        s->local_sub_address[0] = '\0';
-        return 0;
-    }
-    if (strlen(sub_address) > 20)
-        return -1;
-    strcpy(s->local_sub_address, sub_address);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-size_t t30_get_sub_address(t30_state_t *s, char *sub_address)
-{
-    if (sub_address)
-        strcpy(sub_address, s->far_sub_address);
-    return strlen(s->far_sub_address);
-}
-/*- End of function --------------------------------------------------------*/
-
-size_t t30_get_header_info(t30_state_t *s, char *info)
-{
-    if (info)
-        strcpy(info, s->header_info);
-    return strlen(s->header_info);
-}
-/*- End of function --------------------------------------------------------*/
-
-size_t t30_get_local_ident(t30_state_t *s, char *id)
-{
-    if (id)
-        strcpy(id, s->local_ident);
-    return strlen(s->local_ident);
-}
-/*- End of function --------------------------------------------------------*/
-
-size_t t30_get_far_ident(t30_state_t *s, char *id)
-{
-    if (id)
-        strcpy(id, s->far_ident);
-    return strlen(s->far_ident);
-}
-/*- End of function --------------------------------------------------------*/
-
-const char *t30_get_far_country(t30_state_t *s)
-{
-    return s->country;
-}
-/*- End of function --------------------------------------------------------*/
-
-const char *t30_get_far_vendor(t30_state_t *s)
-{
-    return s->vendor;
-}
-/*- End of function --------------------------------------------------------*/
-
-const char *t30_get_far_model(t30_state_t *s)
-{
-    return s->model;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_get_transfer_statistics(t30_state_t *s, t30_stats_t *t)
+SPAN_DECLARE(void) t30_get_transfer_statistics(t30_state_t *s, t30_stats_t *t)
 {
     t4_stats_t stats;
 
     t->bit_rate = fallback_sequence[s->current_fallback].bit_rate;
     t->error_correcting_mode = s->error_correcting_mode;
-    t4_get_transfer_statistics(&(s->t4), &stats);
-    t->pages_transferred = stats.pages_transferred;
+    t->error_correcting_mode_retries = s->error_correcting_mode_retries;
+    t4_get_transfer_statistics(&s->t4, &stats);
+    t->pages_tx = s->tx_page_number;
+    t->pages_rx = s->rx_page_number;
     t->pages_in_file = stats.pages_in_file;
     t->width = stats.width;
     t->length = stats.length;
@@ -5894,125 +6142,16 @@ void t30_get_transfer_statistics(t30_state_t *s, t30_stats_t *t)
     t->x_resolution = stats.x_resolution;
     t->y_resolution = stats.y_resolution;
     t->encoding = stats.encoding;
-    t->image_size = stats.image_size;
+    t->image_size = stats.line_image_size;
     t->current_status = s->current_status;
+#if 0
+    t->rtn_events = s->rtn_events;
+    t->rtp_events = s->rtp_events;
+#endif
 }
 /*- End of function --------------------------------------------------------*/
 
-void t30_set_phase_b_handler(t30_state_t *s, t30_phase_b_handler_t *handler, void *user_data)
-{
-    s->phase_b_handler = handler;
-    s->phase_b_user_data = user_data;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_set_phase_d_handler(t30_state_t *s, t30_phase_d_handler_t *handler, void *user_data)
-{
-    s->phase_d_handler = handler;
-    s->phase_d_user_data = user_data;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_set_phase_e_handler(t30_state_t *s, t30_phase_e_handler_t *handler, void *user_data)
-{
-    s->phase_e_handler = handler;
-    s->phase_e_user_data = user_data;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_set_document_handler(t30_state_t *s, t30_document_handler_t *handler, void *user_data)
-{
-    s->document_handler = handler;
-    s->document_user_data = user_data;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_set_rx_file(t30_state_t *s, const char *file, int stop_page)
-{
-    strncpy(s->rx_file, file, sizeof(s->rx_file));
-    s->rx_file[sizeof(s->rx_file) - 1] = '\0';
-    s->rx_stop_page = stop_page;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_set_tx_file(t30_state_t *s, const char *file, int start_page, int stop_page)
-{
-    strncpy(s->tx_file, file, sizeof(s->tx_file));
-    s->tx_file[sizeof(s->tx_file) - 1] = '\0';
-    s->tx_start_page = start_page;
-    s->tx_stop_page = stop_page;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_receiver_not_ready(t30_state_t *s, int count)
-{
-    s->receiver_not_ready_count = count;
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_supported_modems(t30_state_t *s, int supported_modems)
-{
-    s->supported_modems = supported_modems;
-    build_dis_or_dtc(s);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_supported_compressions(t30_state_t *s, int supported_compressions)
-{
-    s->supported_compressions = supported_compressions;
-    build_dis_or_dtc(s);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_supported_resolutions(t30_state_t *s, int supported_resolutions)
-{
-    s->supported_resolutions = supported_resolutions;
-    build_dis_or_dtc(s);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_supported_image_sizes(t30_state_t *s, int supported_image_sizes)
-{
-    s->supported_image_sizes = supported_image_sizes;
-    build_dis_or_dtc(s);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_ecm_capability(t30_state_t *s, int enabled)
-{
-    s->ecm_allowed = enabled;
-    build_dis_or_dtc(s);
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_min_non_ecm_row_bits(t30_state_t *s, int bits)
-{
-    s->forced_min_non_ecm_row_bits = bits;
-    return 0;
-}
-/*- End of function --------------------------------------------------------*/
-
-int t30_set_rx_encoding(t30_state_t *s, int encoding)
-{
-    switch (encoding)
-    {
-    case T4_COMPRESSION_ITU_T4_1D:
-    case T4_COMPRESSION_ITU_T4_2D:
-    case T4_COMPRESSION_ITU_T6:
-        s->output_encoding = encoding;
-        return 0;
-    }
-    return -1;
-}
-/*- End of function --------------------------------------------------------*/
-
-void t30_local_interrupt_request(t30_state_t *s, int state)
+SPAN_DECLARE(void) t30_local_interrupt_request(t30_state_t *s, int state)
 {
     if (s->timer_t3 > 0)
     {
@@ -6021,6 +6160,119 @@ void t30_local_interrupt_request(t30_state_t *s, int state)
         send_simple_frame(s, (state)  ?  T30_PIP  :  T30_PIN);
     }
     s->local_interrupt_pending = state;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) t30_restart(t30_state_t *s)
+{
+    s->phase = T30_PHASE_IDLE;
+    s->next_phase = T30_PHASE_IDLE;
+    s->current_fallback = 0;
+    s->rx_signal_present = FALSE;
+    s->rx_trained = FALSE;
+    s->rx_frame_received = FALSE;
+    s->current_status = T30_ERR_OK;
+    s->ppr_count = 0;
+    s->ecm_progress = 0;
+    s->receiver_not_ready_count = 0;
+    s->far_dis_dtc_len = 0;
+    memset(&s->far_dis_dtc_frame, 0, sizeof(s->far_dis_dtc_frame));
+    t30_build_dis_or_dtc(s);
+    memset(&s->rx_info, 0, sizeof(s->rx_info));
+    release_resources(s);
+    /* The page number is only reset at call establishment */
+    s->rx_page_number = 0;
+    s->tx_page_number = 0;
+#if 0
+    s->rtn_events = 0;
+    s->rtp_events = 0;
+#endif
+    s->far_end_detected = FALSE;
+    s->timer_t0_t1 = ms_to_samples(DEFAULT_TIMER_T0);
+    if (s->calling_party)
+    {
+        set_state(s, T30_STATE_T);
+        set_phase(s, T30_PHASE_A_CNG);
+    }
+    else
+    {
+        set_state(s, T30_STATE_ANSWERING);
+        set_phase(s, T30_PHASE_A_CED);
+    }
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(t30_state_t *) t30_init(t30_state_t *s,
+                                     int calling_party,
+                                     t30_set_handler_t *set_rx_type_handler,
+                                     void *set_rx_type_user_data,
+                                     t30_set_handler_t *set_tx_type_handler,
+                                     void *set_tx_type_user_data,
+                                     t30_send_hdlc_handler_t *send_hdlc_handler,
+                                     void *send_hdlc_user_data)
+{
+    if (s == NULL)
+    {
+        if ((s = (t30_state_t *) malloc(sizeof(*s))) == NULL)
+            return NULL;
+    }
+    memset(s, 0, sizeof(*s));
+    s->calling_party = calling_party;
+    s->set_rx_type_handler = set_rx_type_handler;
+    s->set_rx_type_user_data = set_rx_type_user_data;
+    s->set_tx_type_handler = set_tx_type_handler;
+    s->set_tx_type_user_data = set_tx_type_user_data;
+    s->send_hdlc_handler = send_hdlc_handler;
+    s->send_hdlc_user_data = send_hdlc_user_data;
+
+    /* Default to the basic modems. */
+    s->supported_modems = T30_SUPPORT_V27TER | T30_SUPPORT_V29 | T30_SUPPORT_V17;
+    s->supported_compressions = T30_SUPPORT_T4_1D_COMPRESSION | T30_SUPPORT_T4_2D_COMPRESSION;
+    s->supported_resolutions = T30_SUPPORT_STANDARD_RESOLUTION | T30_SUPPORT_FINE_RESOLUTION | T30_SUPPORT_SUPERFINE_RESOLUTION
+                             | T30_SUPPORT_R8_RESOLUTION;
+    s->supported_image_sizes = T30_SUPPORT_US_LETTER_LENGTH | T30_SUPPORT_US_LEGAL_LENGTH | T30_SUPPORT_UNLIMITED_LENGTH
+                             | T30_SUPPORT_215MM_WIDTH;
+    /* Set the output encoding to something safe. Most things get 1D and 2D
+       encoding right. Quite a lot get other things wrong. */
+    s->output_encoding = T4_COMPRESSION_ITU_T4_2D;
+    s->local_min_scan_time_code = T30_MIN_SCAN_0MS;
+    span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
+    span_log_set_protocol(&s->logging, "T.30");
+    t30_restart(s);
+    return s;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) t30_release(t30_state_t *s)
+{
+    /* Make sure any FAX in progress is tidied up. If the tidying up has
+       already happened, repeating it here is harmless. */
+    switch (s->operation_in_progress)
+    {
+    case OPERATION_IN_PROGRESS_T4_TX:
+        t4_tx_release(&s->t4);
+        break;
+    case OPERATION_IN_PROGRESS_T4_RX:
+        t4_rx_release(&s->t4);
+        break;
+    }
+    s->operation_in_progress = OPERATION_IN_PROGRESS_NONE;
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) t30_free(t30_state_t *s)
+{
+    t30_release(s);
+    free(s);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) t30_call_active(t30_state_t *s)
+{
+    return (s->phase != T30_PHASE_CALL_FINISHED);
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: hdlc.c,v 1.53 2007/11/12 13:30:08 steveu Exp $
+ * $Id: hdlc.c,v 1.72 2009/06/02 16:03:56 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -41,24 +41,36 @@
 #include "spandsp/crc.h"
 #include "spandsp/bit_operations.h"
 #include "spandsp/hdlc.h"
+#include "spandsp/private/hdlc.h"
 
-static void rx_special_condition(hdlc_rx_state_t *s, int condition)
+static void report_status_change(hdlc_rx_state_t *s, int status)
+{
+    if (s->status_handler)
+        s->status_handler(s->status_user_data, status);
+    else if (s->frame_handler)
+        s->frame_handler(s->frame_user_data, NULL, status, TRUE);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void rx_special_condition(hdlc_rx_state_t *s, int status)
 {
     /* Special conditions */
-    switch (condition)
+    switch (status)
     {
-    case PUTBIT_CARRIER_UP:
-    case PUTBIT_TRAINING_SUCCEEDED:
+    case SIG_STATUS_CARRIER_UP:
+    case SIG_STATUS_TRAINING_SUCCEEDED:
         /* Reset the HDLC receiver. */
+        s->raw_bit_stream = 0;
         s->len = 0;
         s->num_bits = 0;
         s->flags_seen = 0;
         s->framing_ok_announced = FALSE;
         /* Fall through */
-    case PUTBIT_CARRIER_DOWN:
-    case PUTBIT_TRAINING_FAILED:
-    case PUTBIT_END_OF_DATA:
-        s->frame_handler(s->user_data, NULL, condition, TRUE);
+    case SIG_STATUS_TRAINING_IN_PROGRESS:
+    case SIG_STATUS_TRAINING_FAILED:
+    case SIG_STATUS_CARRIER_DOWN:
+    case SIG_STATUS_END_OF_DATA:
+        report_status_change(s, status);
         break;
     default:
         //printf("Eh!\n");
@@ -79,7 +91,7 @@ static __inline__ void octet_set_and_count(hdlc_rx_state_t *s)
         if (--s->octet_count <= 0)
         {
             s->octet_count = s->octet_count_report_interval;
-            s->frame_handler(s->user_data, NULL, PUTBIT_OCTET_REPORT, TRUE);
+            report_status_change(s, SIG_STATUS_OCTET_REPORT);
         }
     }
     else
@@ -102,7 +114,7 @@ static __inline__ void octet_count(hdlc_rx_state_t *s)
         if (--s->octet_count <= 0)
         {
             s->octet_count = s->octet_count_report_interval;
-            s->frame_handler(s->user_data, NULL, PUTBIT_OCTET_REPORT, TRUE);
+            report_status_change(s, SIG_STATUS_OCTET_REPORT);
         }
     }
 }
@@ -114,11 +126,11 @@ static void rx_flag_or_abort(hdlc_rx_state_t *s)
     {
         /* Hit HDLC abort */
         s->rx_aborts++;
-        s->frame_handler(s->user_data, NULL, PUTBIT_ABORT, TRUE);
+        report_status_change(s, SIG_STATUS_ABORT);
         /* If we have not yet seen enough flags, restart the count. If we
            are beyond that point, just back off one step, so we need to see
            another flag before proceeding to collect frame octets. */
-        if (s->flags_seen < s->framing_ok_threshold)
+        if (s->flags_seen < s->framing_ok_threshold - 1)
             s->flags_seen = 0;
         else
             s->flags_seen = s->framing_ok_threshold - 1;
@@ -135,7 +147,7 @@ static void rx_flag_or_abort(hdlc_rx_state_t *s)
             /* We may have a frame, or we may have back to back flags */
             if (s->len)
             {
-                if (s->num_bits == 7  &&  s->len >= s->crc_bytes  &&  s->len <= s->max_frame_len)
+                if (s->num_bits == 7  &&  s->len >= (size_t) s->crc_bytes  &&  s->len <= s->max_frame_len)
                 {
                     if ((s->crc_bytes == 2  &&  crc_itu16_check(s->buffer, s->len))
                         ||
@@ -144,7 +156,7 @@ static void rx_flag_or_abort(hdlc_rx_state_t *s)
                         s->rx_frames++;
                         s->rx_bytes += s->len - s->crc_bytes;
                         s->len -= s->crc_bytes;
-                        s->frame_handler(s->user_data, s->buffer, s->len, TRUE);
+                        s->frame_handler(s->frame_user_data, s->buffer, s->len, TRUE);
                     }
                     else
                     {
@@ -152,7 +164,7 @@ static void rx_flag_or_abort(hdlc_rx_state_t *s)
                         if (s->report_bad_frames)
                         {
                             s->len -= s->crc_bytes;
-                            s->frame_handler(s->user_data, s->buffer, s->len, FALSE);
+                            s->frame_handler(s->frame_user_data, s->buffer, s->len, FALSE);
                         }
                     }
                 }
@@ -163,11 +175,11 @@ static void rx_flag_or_abort(hdlc_rx_state_t *s)
                     {
                         /* Don't let the length go below zero, or it will be confused
                            with one of the special conditions. */
-                        if (s->len >= s->crc_bytes)
+                        if (s->len >= (size_t) s->crc_bytes)
                             s->len -= s->crc_bytes;
                         else
                             s->len = 0;
-                        s->frame_handler(s->user_data, s->buffer, s->len, FALSE);
+                        s->frame_handler(s->frame_user_data, s->buffer, s->len, FALSE);
                     }
                     s->rx_length_errors++;
                 }
@@ -179,10 +191,19 @@ static void rx_flag_or_abort(hdlc_rx_state_t *s)
                greatly reduces the chances of false preamble detection, and anything
                which doesn't send them back-to-back is badly broken. */
             if (s->num_bits != 7)
-                s->flags_seen = 0;
+            {
+                /* Don't set the flags seen indicator back to zero too aggressively.
+                   We want to pick up with the minimum of discarded data when there
+                   is a bit error in the stream, and a bit error could emulate a
+                   misaligned flag. */
+                if (s->flags_seen < s->framing_ok_threshold - 1)
+                    s->flags_seen = 0;
+                else
+                    s->flags_seen = s->framing_ok_threshold - 1;
+            }
             if (++s->flags_seen >= s->framing_ok_threshold  &&  !s->framing_ok_announced)
             {
-                s->frame_handler(s->user_data, NULL, PUTBIT_FRAMING_OK, TRUE);
+                report_status_change(s, SIG_STATUS_FRAMING_OK);
                 s->framing_ok_announced = TRUE;
             }
         }
@@ -200,7 +221,7 @@ static __inline__ void hdlc_rx_put_bit_core(hdlc_rx_state_t *s)
            flag or abort */
         if ((s->raw_bit_stream & 0x4000))
             rx_flag_or_abort(s);
-            return;
+        return;
     }
     s->num_bits++;
     if (s->flags_seen < s->framing_ok_threshold)
@@ -231,7 +252,7 @@ static __inline__ void hdlc_rx_put_bit_core(hdlc_rx_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-void hdlc_rx_put_bit(hdlc_rx_state_t *s, int new_bit)
+SPAN_DECLARE_NONSTD(void) hdlc_rx_put_bit(hdlc_rx_state_t *s, int new_bit)
 {
     if (new_bit < 0)
     {
@@ -243,7 +264,7 @@ void hdlc_rx_put_bit(hdlc_rx_state_t *s, int new_bit)
 }
 /*- End of function --------------------------------------------------------*/
 
-void hdlc_rx_put_byte(hdlc_rx_state_t *s, int new_byte)
+SPAN_DECLARE_NONSTD(void) hdlc_rx_put_byte(hdlc_rx_state_t *s, int new_byte)
 {
     int i;
 
@@ -261,7 +282,7 @@ void hdlc_rx_put_byte(hdlc_rx_state_t *s, int new_byte)
 }
 /*- End of function --------------------------------------------------------*/
 
-void hdlc_rx_put(hdlc_rx_state_t *s, const uint8_t buf[], int len)
+SPAN_DECLARE_NONSTD(void) hdlc_rx_put(hdlc_rx_state_t *s, const uint8_t buf[], int len)
 {
     int i;
 
@@ -270,25 +291,25 @@ void hdlc_rx_put(hdlc_rx_state_t *s, const uint8_t buf[], int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-void hdlc_rx_set_max_frame_len(hdlc_rx_state_t *s, size_t max_len)
+SPAN_DECLARE(void) hdlc_rx_set_max_frame_len(hdlc_rx_state_t *s, size_t max_len)
 {
     max_len += s->crc_bytes;
     s->max_frame_len = (max_len <= sizeof(s->buffer))  ?  max_len  :  sizeof(s->buffer);
 }
 /*- End of function --------------------------------------------------------*/
 
-void hdlc_rx_set_octet_counting_report_interval(hdlc_rx_state_t *s, int interval)
+SPAN_DECLARE(void) hdlc_rx_set_octet_counting_report_interval(hdlc_rx_state_t *s, int interval)
 {
     s->octet_count_report_interval = interval;
 }
 /*- End of function --------------------------------------------------------*/
 
-hdlc_rx_state_t *hdlc_rx_init(hdlc_rx_state_t *s,
-                              int crc32,
-                              int report_bad_frames,
-                              int framing_ok_threshold,
-                              hdlc_frame_handler_t handler,
-                              void *user_data)
+SPAN_DECLARE(hdlc_rx_state_t *) hdlc_rx_init(hdlc_rx_state_t *s,
+                                             int crc32,
+                                             int report_bad_frames,
+                                             int framing_ok_threshold,
+                                             hdlc_frame_handler_t handler,
+                                             void *user_data)
 {
     if (s == NULL)
     {
@@ -297,7 +318,7 @@ hdlc_rx_state_t *hdlc_rx_init(hdlc_rx_state_t *s,
     }
     memset(s, 0, sizeof(*s));
     s->frame_handler = handler;
-    s->user_data = user_data;
+    s->frame_user_data = user_data;
     s->crc_bytes = (crc32)  ?  4  :  2;
     s->report_bad_frames = report_bad_frames;
     s->framing_ok_threshold = (framing_ok_threshold < 1)  ?  1  :  framing_ok_threshold;
@@ -306,8 +327,35 @@ hdlc_rx_state_t *hdlc_rx_init(hdlc_rx_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_rx_get_stats(hdlc_rx_state_t *s,
-                      hdlc_rx_stats_t *t)
+SPAN_DECLARE(void) hdlc_rx_set_frame_handler(hdlc_rx_state_t *s, hdlc_frame_handler_t handler, void *user_data)
+{
+    s->frame_handler = handler;
+    s->frame_user_data = user_data;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) hdlc_rx_set_status_handler(hdlc_rx_state_t *s, modem_rx_status_func_t handler, void *user_data)
+{
+    s->status_handler = handler;
+    s->status_user_data = user_data;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) hdlc_rx_release(hdlc_rx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) hdlc_rx_free(hdlc_rx_state_t *s)
+{
+    free(s);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) hdlc_rx_get_stats(hdlc_rx_state_t *s,
+                                    hdlc_rx_stats_t *t)
 {
     t->bytes = s->rx_bytes;
     t->good_frames = s->rx_frames;
@@ -318,7 +366,7 @@ int hdlc_rx_get_stats(hdlc_rx_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_frame(hdlc_tx_state_t *s, const uint8_t *frame, size_t len)
+SPAN_DECLARE(int) hdlc_tx_frame(hdlc_tx_state_t *s, const uint8_t *frame, size_t len)
 {
     if (len <= 0)
     {
@@ -353,7 +401,7 @@ int hdlc_tx_frame(hdlc_tx_state_t *s, const uint8_t *frame, size_t len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_flags(hdlc_tx_state_t *s, int len)
+SPAN_DECLARE(int) hdlc_tx_flags(hdlc_tx_state_t *s, int len)
 {
     /* Some HDLC applications require the ability to force a period of HDLC
        flag words. */
@@ -369,7 +417,7 @@ int hdlc_tx_flags(hdlc_tx_state_t *s, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_abort(hdlc_tx_state_t *s)
+SPAN_DECLARE(int) hdlc_tx_abort(hdlc_tx_state_t *s)
 {
     /* TODO: This is a really crude way of just fudging an abort out for simple
              test purposes. */
@@ -379,7 +427,7 @@ int hdlc_tx_abort(hdlc_tx_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_corrupt_frame(hdlc_tx_state_t *s)
+SPAN_DECLARE(int) hdlc_tx_corrupt_frame(hdlc_tx_state_t *s)
 {
     if (s->len <= 0)
         return -1;
@@ -392,7 +440,7 @@ int hdlc_tx_corrupt_frame(hdlc_tx_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_get_byte(hdlc_tx_state_t *s)
+SPAN_DECLARE_NONSTD(int) hdlc_tx_get_byte(hdlc_tx_state_t *s)
 {
     int i;
     int byte_in_progress;
@@ -440,7 +488,7 @@ int hdlc_tx_get_byte(hdlc_tx_state_t *s)
                 }
                 s->pos = HDLC_MAXFRAME_LEN;
             }
-            else if (s->pos == HDLC_MAXFRAME_LEN + s->crc_bytes)
+            else if (s->pos == (size_t) (HDLC_MAXFRAME_LEN + s->crc_bytes))
             {
                 /* Finish off the current byte with some flag bits. If we are at the
                    start of a byte we need a at least one whole byte of flag to ensure
@@ -491,13 +539,13 @@ int hdlc_tx_get_byte(hdlc_tx_state_t *s)
     if (s->tx_end)
     {
         s->tx_end = FALSE;
-        return PUTBIT_END_OF_DATA;
+        return SIG_STATUS_END_OF_DATA;
     }
     return s->idle_octet;
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_get_bit(hdlc_tx_state_t *s)
+SPAN_DECLARE_NONSTD(int) hdlc_tx_get_bit(hdlc_tx_state_t *s)
 {
     int txbit;
 
@@ -513,33 +561,33 @@ int hdlc_tx_get_bit(hdlc_tx_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-int hdlc_tx_get(hdlc_tx_state_t *s, uint8_t buf[], size_t max_len)
+SPAN_DECLARE_NONSTD(int) hdlc_tx_get(hdlc_tx_state_t *s, uint8_t buf[], size_t max_len)
 {
-    int i;
+    size_t i;
     int x;
 
     for (i = 0;  i < max_len;  i++)
     {
-        if ((x = hdlc_tx_get_byte(s)) == PUTBIT_END_OF_DATA)
+        if ((x = hdlc_tx_get_byte(s)) == SIG_STATUS_END_OF_DATA)
             return i;
-        buf[i] = x;
+        buf[i] = (uint8_t) x;
     }
-    return i;
+    return (int) i;
 }
 /*- End of function --------------------------------------------------------*/
 
-void hdlc_tx_set_max_frame_len(hdlc_tx_state_t *s, size_t max_len)
+SPAN_DECLARE(void) hdlc_tx_set_max_frame_len(hdlc_tx_state_t *s, size_t max_len)
 {
     s->max_frame_len = (max_len <= HDLC_MAXFRAME_LEN)  ?  max_len  :  HDLC_MAXFRAME_LEN;
 }
 /*- End of function --------------------------------------------------------*/
 
-hdlc_tx_state_t *hdlc_tx_init(hdlc_tx_state_t *s,
-                              int crc32,
-                              int inter_frame_flags,
-                              int progressive,
-                              hdlc_underflow_handler_t handler,
-                              void *user_data)
+SPAN_DECLARE(hdlc_tx_state_t *) hdlc_tx_init(hdlc_tx_state_t *s,
+                                             int crc32,
+                                             int inter_frame_flags,
+                                             int progressive,
+                                             hdlc_underflow_handler_t handler,
+                                             void *user_data)
 {
     if (s == NULL)
     {
@@ -564,6 +612,19 @@ hdlc_tx_state_t *hdlc_tx_init(hdlc_tx_state_t *s,
     s->progressive = progressive;
     s->max_frame_len = HDLC_MAXFRAME_LEN;
     return s;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) hdlc_tx_release(hdlc_tx_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) hdlc_tx_free(hdlc_tx_state_t *s)
+{
+    free(s);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

@@ -11,19 +11,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: noise.h,v 1.11 2007/04/08 08:16:18 steveu Exp $
+ * $Id: noise.h,v 1.17 2009/02/10 13:06:47 steveu Exp $
  */
 
 /*! \file */
@@ -91,14 +91,7 @@ enum
     Noise generator descriptor. This contains all the state information for an instance
     of the noise generator.
  */
-typedef struct
-{
-    int class_of_noise;
-    int quality;
-    int32_t rms;
-    uint32_t rndnum;
-    int32_t state;
-} noise_state_t;
+typedef struct noise_state_s noise_state_t;
 
 #if defined(__cplusplus)
 extern "C"
@@ -115,16 +108,20 @@ extern "C"
            generation to be adjusted.
     \return A pointer to the noise generator context.
 */
-noise_state_t *noise_init_dbm0(noise_state_t *s, int seed, float level, int class_of_noise, int quality);
+SPAN_DECLARE(noise_state_t *) noise_init_dbm0(noise_state_t *s, int seed, float level, int class_of_noise, int quality);
 
-noise_state_t *noise_init_dbov(noise_state_t *s, int seed, float level, int class_of_noise, int quality);
+SPAN_DECLARE(noise_state_t *) noise_init_dbov(noise_state_t *s, int seed, float level, int class_of_noise, int quality);
+
+SPAN_DECLARE(int) noise_release(noise_state_t *s);
+
+SPAN_DECLARE(int) noise_free(noise_state_t *s);
 
 /*! Generate a sample of audio noise.
     \brief Generate a sample of audio noise.
     \param s The noise generator context.
     \return The generated sample.
 */
-int16_t noise(noise_state_t *s);
+SPAN_DECLARE(int16_t) noise(noise_state_t *s);
 
 #if defined(__cplusplus)
 }

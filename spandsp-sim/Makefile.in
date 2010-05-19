@@ -43,7 +43,13 @@ subdir = spandsp-sim
 DIST_COMMON = $(nobase_include_HEADERS) $(srcdir)/Makefile.am \
 	$(srcdir)/Makefile.in
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
-am__aclocal_m4_deps = $(top_srcdir)/configure.ac
+am__aclocal_m4_deps = $(top_srcdir)/config/ax_compiler_vendor.m4 \
+	$(top_srcdir)/config/ax_check_real_file.m4 \
+	$(top_srcdir)/config/ax_fixed_point_machine.m4 \
+	$(top_srcdir)/config/ax_misaligned_access_fails.m4 \
+	$(top_srcdir)/config/ax_c99_features.m4 \
+	$(top_srcdir)/config/ax_check_export_capability.m4 \
+	$(top_srcdir)/configure.ac
 am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
 	$(ACLOCAL_M4)
 mkinstalldirs = $(install_sh) -d
@@ -59,7 +65,8 @@ am__installdirs = "$(DESTDIR)$(libdir)" "$(DESTDIR)$(includedir)"
 libLTLIBRARIES_INSTALL = $(INSTALL)
 LTLIBRARIES = $(lib_LTLIBRARIES)
 libspandsp_sim_la_LIBADD =
-am_libspandsp_sim_la_OBJECTS = g1050.lo line_model.lo test_utils.lo
+am_libspandsp_sim_la_OBJECTS = g1050.lo line_model.lo rfc2198_sim.lo \
+	test_utils.lo
 nodist_libspandsp_sim_la_OBJECTS = line_models.lo
 libspandsp_sim_la_OBJECTS = $(am_libspandsp_sim_la_OBJECTS) \
 	$(nodist_libspandsp_sim_la_OBJECTS)
@@ -102,18 +109,34 @@ CCDEPMODE = @CCDEPMODE@
 CC_FOR_BUILD = @CC_FOR_BUILD@
 CFLAGS = @CFLAGS@
 COMP_VENDOR_CFLAGS = @COMP_VENDOR_CFLAGS@
+COMP_VENDOR_LDFLAGS = @COMP_VENDOR_LDFLAGS@
 COND_DOC_FALSE = @COND_DOC_FALSE@
 COND_DOC_TRUE = @COND_DOC_TRUE@
-COND_ITUTESTS_FALSE = @COND_ITUTESTS_FALSE@
-COND_ITUTESTS_TRUE = @COND_ITUTESTS_TRUE@
 COND_MMX_FALSE = @COND_MMX_FALSE@
 COND_MMX_TRUE = @COND_MMX_TRUE@
+COND_SSE2_FALSE = @COND_SSE2_FALSE@
+COND_SSE2_TRUE = @COND_SSE2_TRUE@
+COND_SSE3_FALSE = @COND_SSE3_FALSE@
+COND_SSE3_TRUE = @COND_SSE3_TRUE@
+COND_SSE4A_FALSE = @COND_SSE4A_FALSE@
+COND_SSE4A_TRUE = @COND_SSE4A_TRUE@
+COND_SSE4_1_FALSE = @COND_SSE4_1_FALSE@
+COND_SSE4_1_TRUE = @COND_SSE4_1_TRUE@
+COND_SSE4_2_FALSE = @COND_SSE4_2_FALSE@
+COND_SSE4_2_TRUE = @COND_SSE4_2_TRUE@
+COND_SSE5_FALSE = @COND_SSE5_FALSE@
+COND_SSE5_TRUE = @COND_SSE5_TRUE@
 COND_SSE_FALSE = @COND_SSE_FALSE@
 COND_SSE_TRUE = @COND_SSE_TRUE@
+COND_SSSE3_FALSE = @COND_SSSE3_FALSE@
+COND_SSSE3_TRUE = @COND_SSSE3_TRUE@
+COND_TESTDATA_FALSE = @COND_TESTDATA_FALSE@
+COND_TESTDATA_TRUE = @COND_TESTDATA_TRUE@
 COND_TESTS_FALSE = @COND_TESTS_FALSE@
 COND_TESTS_TRUE = @COND_TESTS_TRUE@
 CPP = @CPP@
 CPPFLAGS = @CPPFLAGS@
+CPPFLAGS_FOR_BUILD = @CPPFLAGS_FOR_BUILD@
 CXX = @CXX@
 CXXCPP = @CXXCPP@
 CXXDEPMODE = @CXXDEPMODE@
@@ -121,6 +144,7 @@ CXXFLAGS = @CXXFLAGS@
 CYGPATH_W = @CYGPATH_W@
 DEFS = @DEFS@
 DEPDIR = @DEPDIR@
+DSYMUTIL = @DSYMUTIL@
 ECHO = @ECHO@
 ECHO_C = @ECHO_C@
 ECHO_N = @ECHO_N@
@@ -139,11 +163,12 @@ INSTALL_SCRIPT = @INSTALL_SCRIPT@
 INSTALL_STRIP_PROGRAM = @INSTALL_STRIP_PROGRAM@
 LDFLAGS = @LDFLAGS@
 LIBOBJS = @LIBOBJS@
-LIBS = @LIBS@ $(TESTLIBS)
+LIBS = @LIBS@ -L$(top_builddir)/src -lspandsp $(SIMLIBS)
 LIBTOOL = @LIBTOOL@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+NMEDIT = @NMEDIT@
 OBJEXT = @OBJEXT@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
@@ -156,9 +181,12 @@ RANLIB = @RANLIB@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
+SIMLIBS = @SIMLIBS@
 SPANDSP_LT_AGE = @SPANDSP_LT_AGE@
 SPANDSP_LT_CURRENT = @SPANDSP_LT_CURRENT@
 SPANDSP_LT_REVISION = @SPANDSP_LT_REVISION@
+SPANDSP_MISALIGNED_ACCESS_FAILS = @SPANDSP_MISALIGNED_ACCESS_FAILS@
+SPANDSP_USE_EXPORT_CAPABILITY = @SPANDSP_USE_EXPORT_CAPABILITY@
 SPANDSP_USE_FIXED_POINT = @SPANDSP_USE_FIXED_POINT@
 STRIP = @STRIP@
 TESTLIBS = @TESTLIBS@
@@ -166,7 +194,9 @@ VERSION = @VERSION@
 ac_ct_AR = @ac_ct_AR@
 ac_ct_CC = @ac_ct_CC@
 ac_ct_CXX = @ac_ct_CXX@
+ac_ct_DSYMUTIL = @ac_ct_DSYMUTIL@
 ac_ct_F77 = @ac_ct_F77@
+ac_ct_NMEDIT = @ac_ct_NMEDIT@
 ac_ct_RANLIB = @ac_ct_RANLIB@
 ac_ct_STRIP = @ac_ct_STRIP@
 am__fastdepCC_FALSE = @am__fastdepCC_FALSE@
@@ -207,29 +237,45 @@ sharedstatedir = @sharedstatedir@
 sysconfdir = @sysconfdir@
 target_alias = @target_alias@
 AM_CFLAGS = $(COMP_VENDOR_CFLAGS)
+AM_LDFLAGS = $(COMP_VENDOR_LDFLAGS)
 MAINTAINERCLEANFILES = Makefile.in
+EXTRA_DIST = libspandsp_sim.dsp \
+             libspandsp_sim.2005.vcproj \
+             libspandsp_sim.2008.vcproj \
+             msvc/make_line_models.2008.vcproj \
+             msvc/msvcproj.head \
+             msvc/msvcproj.foot \
+             msvc/vc8proj.head \
+             msvc/vc8proj.foot \
+             msvc/vc9proj.head \
+             msvc/vc9proj.foot
+
 INCLUDES = -I$(top_builddir) -I$(top_builddir)/src -DDATADIR="\"$(pkgdatadir)\""
 lib_LTLIBRARIES = libspandsp-sim.la
 libspandsp_sim_la_SOURCES = g1050.c \
                             line_model.c \
+                            rfc2198_sim.c \
                             test_utils.c
 
 nodist_libspandsp_sim_la_SOURCES = line_models.c
-libspandsp_sim_la_LDFLAGS = -version-info @SPANDSP_LT_CURRENT@:@SPANDSP_LT_REVISION@:@SPANDSP_LT_AGE@
+libspandsp_sim_la_LDFLAGS = -version-info @SPANDSP_LT_CURRENT@:@SPANDSP_LT_REVISION@:@SPANDSP_LT_AGE@ $(COMP_VENDOR_LDFLAGS)
 nobase_include_HEADERS = spandsp/g1050.h \
                          spandsp/line_model.h \
                          spandsp/line_models.h \
+                         spandsp/rfc2198_sim.h \
                          spandsp/test_utils.h \
                          spandsp-sim.h
 
 make_line_models_SOURCES = make_line_models.c
 make_line_models_LDADD = -L$(top_builddir)/src -lspandsp
-DSP = libspandsp-sim.dsp
-VCPROJ = libspandsp-sim.vcproj
-WIN32SOURCES = $(libspandsp_sim_la_SOURCES) msvc/gettimeofday.c
-WIN32HEADERS = $(nobase_include_HEADERS) spandsp-sim.h
+DSP = libspandsp_sim.dsp
+VCPROJ8 = libspandsp_sim.2005.vcproj
+VCPROJ9 = libspandsp_sim.2008.vcproj
+WIN32SOURCES = $(libspandsp_sim_la_SOURCES)
+WIN32HEADERS = $(nobase_include_HEADERS)
 DSPOUT = | awk '{printf("%s\r\n", $$0)}' >> $(DSP)
-VCPROJOUT = | awk '{printf("%s\r\n", $$0)}' >> $(VCPROJ)
+VCPROJOUT8 = | awk '{printf("%s\r\n", $$0)}' >> $(VCPROJ8)
+VCPROJOUT9 = | awk '{printf("%s\r\n", $$0)}' >> $(VCPROJ9)
 all: all-am
 
 .SUFFIXES:
@@ -313,6 +359,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/line_model.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/line_models.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/make_line_models.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rfc2198_sim.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/test_utils.Plo@am__quote@
 
 .c.o:
@@ -414,7 +461,7 @@ distclean-tags:
 	-rm -f TAGS ID GTAGS GRTAGS GSYMS GPATH tags
 
 distdir: $(DISTFILES)
-	$(mkdir_p) $(distdir)/spandsp
+	$(mkdir_p) $(distdir)/msvc $(distdir)/spandsp
 	@srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`; \
 	topsrcdirstrip=`echo "$(top_srcdir)" | sed 's|.|.|g'`; \
 	list='$(DISTFILES)'; for file in $$list; do \
@@ -571,17 +618,29 @@ $(DSP): msvc/msvcproj.head msvc/msvcproj.foot Makefile.am
 	echo "# End Group" $(DSPOUT); \
 	cat $(srcdir)/msvc/msvcproj.foot $(DSPOUT) )
 
-$(VCPROJ): msvc/vc8proj.head msvc/vc8proj.foot Makefile.am
-	echo "creating $(VCPROJ)"
-	@(cp $(srcdir)/msvc/vc8proj.head $(VCPROJ); \
+$(VCPROJ8): msvc/vc8proj.head msvc/vc8proj.foot Makefile.am
+	echo "creating $(VCPROJ8)"
+	@(cp $(srcdir)/msvc/vc8proj.head $(VCPROJ8); \
 	for file in $(WIN32SOURCES); do \
-		echo "<File RelativePath=\""$$file"\"></File>" $(VCPROJOUT); \
+		echo "<File RelativePath=\""$$file"\"></File>" $(VCPROJOUT8); \
 	done; \
-	echo "</Filter><Filter  Name=\"Header Files\">" $(VCPROJOUT); \
+	echo "</Filter><Filter  Name=\"Header Files\">" $(VCPROJOUT8); \
 	for file in $(WIN32HEADERS); do \
-		echo "<File RelativePath=\""$$file"\"></File>" $(VCPROJOUT); \
+		echo "<File RelativePath=\""$$file"\"></File>" $(VCPROJOUT8); \
 	done; \
-	cat $(srcdir)/msvc/vc8proj.foot $(VCPROJOUT) )
+	cat $(srcdir)/msvc/vc8proj.foot $(VCPROJOUT8) )
+
+$(VCPROJ9): msvc/vc9proj.head msvc/vc9proj.foot Makefile.am
+	echo "creating $(VCPROJ9)"
+	@(cp $(srcdir)/msvc/vc9proj.head $(VCPROJ9); \
+	for file in $(WIN32SOURCES); do \
+		echo "<File RelativePath=\""$$file"\"></File>" $(VCPROJOUT9); \
+	done; \
+	echo "</Filter><Filter  Name=\"Header Files\">" $(VCPROJOUT9); \
+	for file in $(WIN32HEADERS); do \
+		echo "<File RelativePath=\""$$file"\"></File>" $(VCPROJOUT9); \
+	done; \
+	cat $(srcdir)/msvc/vc9proj.foot $(VCPROJOUT9) )
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.
 .NOEXPORT:

@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: vector_int.h,v 1.7 2007/04/08 08:16:18 steveu Exp $
+ * $Id: vector_int.h,v 1.14 2009/01/31 08:48:11 steveu Exp $
  */
 
 #if !defined(_SPANDSP_VECTOR_INT_H_)
@@ -33,18 +33,99 @@ extern "C"
 {
 #endif
 
-int32_t vec_dot_prodi16(const int16_t x[], const int16_t y[], int n);
+static __inline__ void vec_copyi(int z[], const int x[], int n)
+{
+    memcpy(z, x, n*sizeof(z[0]));
+}
+/*- End of function --------------------------------------------------------*/
 
-/*! \brief Find the minimum and maximum values in a vector.
+static __inline__ void vec_copyi16(int16_t z[], const int16_t x[], int n)
+{
+    memcpy(z, x, n*sizeof(z[0]));
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_copyi32(int32_t z[], const int32_t x[], int n)
+{
+    memcpy(z, x, n*sizeof(z[0]));
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_zeroi(int z[], int n)
+{
+    memset(z, 0, n*sizeof(z[0]));
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_zeroi16(int16_t z[], int n)
+{
+    memset(z, 0, n*sizeof(z[0]));
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_zeroi32(int32_t z[], int n)
+{
+    memset(z, 0, n*sizeof(z[0]));
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_seti(int z[], int x, int n)
+{
+    int i;
+    
+    for (i = 0;  i < n;  i++)
+        z[i] = x;
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_seti16(int16_t z[], int16_t x, int n)
+{
+    int i;
+    
+    for (i = 0;  i < n;  i++)
+        z[i] = x;
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ void vec_seti32(int32_t z[], int32_t x, int n)
+{
+    int i;
+    
+    for (i = 0;  i < n;  i++)
+        z[i] = x;
+}
+/*- End of function --------------------------------------------------------*/
+
+/*! \brief Find the dot product of two int16_t vectors.
+    \param x The first vector.
+    \param y The first vector.
+    \param n The number of elements in the vectors.
+    \return The dot product of the two vectors. */
+SPAN_DECLARE(int32_t) vec_dot_prodi16(const int16_t x[], const int16_t y[], int n);
+
+/*! \brief Find the dot product of two int16_t vectors, where the first is a circular buffer
+           with an offset for the starting position.
+    \param x The first vector.
+    \param y The first vector.
+    \param n The number of elements in the vectors.
+    \param pos The starting position in the x vector.
+    \return The dot product of the two vectors. */
+SPAN_DECLARE(int32_t) vec_circular_dot_prodi16(const int16_t x[], const int16_t y[], int n, int pos);
+
+SPAN_DECLARE(void) vec_lmsi16(const int16_t x[], int16_t y[], int n, int16_t error);
+
+SPAN_DECLARE(void) vec_circular_lmsi16(const int16_t x[], int16_t y[], int n, int pos, int16_t error);
+
+/*! \brief Find the minimum and maximum values in an int16_t vector.
     \param x The vector to be searched.
-    \param n The number of elements in the vetor.
-    \param result A two element vector. The first will receive the 
-           maximum. The second will receive thw minimum. This parameter
+    \param n The number of elements in the vector.
+    \param out A two element vector. The first will receive the 
+           maximum. The second will receive the minimum. This parameter
            may be set to NULL.
     \return The absolute maximum value. Since the range of negative numbers
             exceeds the range of positive one, the returned integer is longer
             than the ones being searched. */
-int32_t vec_min_maxi16(const int16_t x[], int n, int16_t out[]);
+SPAN_DECLARE(int32_t) vec_min_maxi16(const int16_t x[], int n, int16_t out[]);
 
 static __inline__ int vec_norm2i16(const int16_t *vec, int len)
 {

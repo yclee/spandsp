@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: time_scale.c,v 1.18 2007/11/30 12:20:34 steveu Exp $
+ * $Id: time_scale.c,v 1.30 2009/02/10 13:06:47 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -44,9 +44,14 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/time_scale.h"
+#include "spandsp/saturated.h"
+
+#include "spandsp/private/time_scale.h"
 
 /*
     Time scaling for speech, based on the Pointer Interval Controlled
@@ -95,35 +100,37 @@ static __inline__ void overlap_add(int16_t amp1[], int16_t amp2[], int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int time_scale_rate(time_scale_state_t *s, float rate)
+SPAN_DECLARE(int) time_scale_rate(time_scale_state_t *s, float playout_rate)
 {
-    if (rate <= 0.0f)
+    if (playout_rate <= 0.0f)
         return -1;
     /*endif*/
-    if (rate >= 0.99f  &&  rate <= 1.01f)
+    if (playout_rate >= 0.99f  &&  playout_rate <= 1.01f)
     {
         /* Treat rate close to normal speed as exactly normal speed, and
            avoid divide by zero, and other numerical problems. */
-        rate = 1.0f;
+        playout_rate = 1.0f;
     }
-    else if (rate < 1.0f)
+    else if (playout_rate < 1.0f)
     {
-        s->rcomp = rate/(1.0f - rate);
+        s->rcomp = playout_rate/(1.0f - playout_rate);
     }
     else
     {
-        s->rcomp = 1.0f/(rate - 1.0f);
+        s->rcomp = 1.0f/(playout_rate - 1.0f);
     }
     /*endif*/
-    s->rate = rate;
+    s->playout_rate = playout_rate;
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-time_scale_state_t *time_scale_init(time_scale_state_t *s, float rate)
+SPAN_DECLARE(time_scale_state_t *) time_scale_init(time_scale_state_t *s, int sample_rate, float playout_rate)
 {
     int alloced;
-    
+
+    if (sample_rate > TIME_SCALE_MAX_SAMPLE_RATE)
+        return NULL;
     alloced = FALSE;
     if (s == NULL)
     {
@@ -133,7 +140,11 @@ time_scale_state_t *time_scale_init(time_scale_state_t *s, float rate)
         alloced = TRUE;
     }
     /*endif*/
-    if (time_scale_rate(s, rate))
+    s->sample_rate = sample_rate;
+    s->min_pitch = sample_rate/TIME_SCALE_MIN_PITCH;
+    s->max_pitch = sample_rate/TIME_SCALE_MAX_PITCH;
+    s->buf_len = 2*sample_rate/TIME_SCALE_MIN_PITCH;
+    if (time_scale_rate(s, playout_rate))
     {
         if (alloced)
             free(s);
@@ -147,14 +158,20 @@ time_scale_state_t *time_scale_init(time_scale_state_t *s, float rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-int time_scale_free(time_scale_state_t *s)
+SPAN_DECLARE(int) time_scale_release(time_scale_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) time_scale_free(time_scale_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int time_scale(time_scale_state_t *s, int16_t out[], int16_t in[], int len)
+SPAN_DECLARE(int) time_scale(time_scale_state_t *s, int16_t out[], int16_t in[], int len)
 {
     double lcpf;
     int pitch;
@@ -166,59 +183,59 @@ int time_scale(time_scale_state_t *s, int16_t out[], int16_t in[], int len)
     in_len = 0;
 
     /* Top up the buffer */
-    if (s->fill + len < TIME_SCALE_BUF_LEN)
+    if (s->fill + len < s->buf_len)
     {
         /* Cannot continue without more samples */
         memcpy(s->buf + s->fill, in, sizeof(int16_t)*len);
         s->fill += len;
         return out_len;
     }
-    k = (TIME_SCALE_BUF_LEN - s->fill);
+    k = s->buf_len - s->fill;
     memcpy(s->buf + s->fill, in, sizeof(int16_t)*k);
     in_len += k;
-    s->fill = TIME_SCALE_BUF_LEN;
-    while (s->fill == TIME_SCALE_BUF_LEN)
+    s->fill = s->buf_len;
+    while (s->fill == s->buf_len)
     {
-        while (s->lcp >= TIME_SCALE_BUF_LEN)
+        while (s->lcp >= s->buf_len)
         {
-            memcpy(out + out_len, s->buf, sizeof(int16_t)*TIME_SCALE_BUF_LEN);
-            out_len += TIME_SCALE_BUF_LEN;
-            if (len - in_len < TIME_SCALE_BUF_LEN)
+            memcpy(out + out_len, s->buf, sizeof(int16_t)*s->buf_len);
+            out_len += s->buf_len;
+            if (len - in_len < s->buf_len)
             {
                 /* Cannot continue without more samples */
                 memcpy(s->buf, in + in_len, sizeof(int16_t)*(len - in_len));
                 s->fill = len - in_len;
-                s->lcp -= TIME_SCALE_BUF_LEN;
+                s->lcp -= s->buf_len;
                 return out_len;
             }
-            memcpy(s->buf, in + in_len, sizeof(int16_t)*TIME_SCALE_BUF_LEN);
-            in_len += TIME_SCALE_BUF_LEN;
-            s->lcp -= TIME_SCALE_BUF_LEN;
+            memcpy(s->buf, in + in_len, sizeof(int16_t)*s->buf_len);
+            in_len += s->buf_len;
+            s->lcp -= s->buf_len;
         }
         if (s->lcp > 0)
         {
             memcpy(out + out_len, s->buf, sizeof(int16_t)*s->lcp);
             out_len += s->lcp;
-            memcpy(s->buf, s->buf + s->lcp, sizeof(int16_t)*(TIME_SCALE_BUF_LEN - s->lcp));
+            memcpy(s->buf, s->buf + s->lcp, sizeof(int16_t)*(s->buf_len - s->lcp));
             if (len - in_len < s->lcp)
             {
                 /* Cannot continue without more samples */
-                memcpy(s->buf + (TIME_SCALE_BUF_LEN - s->lcp), in + in_len, sizeof(int16_t)*(len - in_len));
-                s->fill = TIME_SCALE_BUF_LEN - s->lcp + len - in_len;
+                memcpy(s->buf + (s->buf_len - s->lcp), in + in_len, sizeof(int16_t)*(len - in_len));
+                s->fill = s->buf_len - s->lcp + len - in_len;
                 s->lcp = 0;
                 return out_len;
             }
-            memcpy(s->buf + (TIME_SCALE_BUF_LEN - s->lcp), in + in_len, sizeof(int16_t)*s->lcp);
+            memcpy(s->buf + (s->buf_len - s->lcp), in + in_len, sizeof(int16_t)*s->lcp);
             in_len += s->lcp;
             s->lcp = 0;
         }
-        if (s->rate == 1.0f)
+        if (s->playout_rate == 1.0f)
         {
             s->lcp = 0x7FFFFFFF;
         }
         else
         {
-            pitch = amdf_pitch(SAMPLE_RATE/TIME_SCALE_MIN_PITCH, SAMPLE_RATE/TIME_SCALE_MAX_PITCH, s->buf, SAMPLE_RATE/TIME_SCALE_MIN_PITCH);
+            pitch = amdf_pitch(s->min_pitch, s->max_pitch, s->buf, s->min_pitch);
             lcpf = (double) pitch*s->rcomp;
             /* Nudge around to compensate for fractional samples */
             s->lcp = (int) lcpf;
@@ -234,19 +251,19 @@ int time_scale(time_scale_state_t *s, int16_t out[], int16_t in[], int len)
                 s->lcp++;
                 s->rate_nudge += 1.0f;
             }
-            if (s->rate < 1.0f)
+            if (s->playout_rate < 1.0f)
             {
                 /* Speed up - drop a chunk of data */
                 overlap_add(s->buf, s->buf + pitch, pitch);
-                memcpy(&s->buf[pitch], &s->buf[2*pitch], sizeof(int16_t)*(TIME_SCALE_BUF_LEN - 2*pitch));
+                memcpy(&s->buf[pitch], &s->buf[2*pitch], sizeof(int16_t)*(s->buf_len - 2*pitch));
                 if (len - in_len < pitch)
                 {
                     /* Cannot continue without more samples */
-                    memcpy(s->buf + TIME_SCALE_BUF_LEN - pitch, in + in_len, sizeof(int16_t)*(len - in_len));
+                    memcpy(s->buf + s->buf_len - pitch, in + in_len, sizeof(int16_t)*(len - in_len));
                     s->fill += (len - in_len - pitch);
                     return out_len;
                 }
-                memcpy(s->buf + TIME_SCALE_BUF_LEN - pitch, in + in_len, sizeof(int16_t)*pitch);
+                memcpy(s->buf + s->buf_len - pitch, in + in_len, sizeof(int16_t)*pitch);
                 in_len += pitch;
             }
             else
@@ -259,6 +276,12 @@ int time_scale(time_scale_state_t *s, int16_t out[], int16_t in[], int len)
         }
     }
     return out_len;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) time_scale_max_output_len(time_scale_state_t *s, int input_len)
+{
+    return (int) (input_len*s->playout_rate + s->min_pitch + 1);
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

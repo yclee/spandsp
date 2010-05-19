@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: timing.h,v 1.11 2007/04/08 08:16:18 steveu Exp $
+ * $Id: timing.h,v 1.14 2009/09/04 14:38:47 steveu Exp $
  */
 
 #if !defined(_SPANDSP_TIMING_H_)
@@ -56,8 +56,8 @@ static __inline__ uint64_t rdtscll(void)
 #elif defined(__x86_64__)
 static __inline__ uint64_t rdtscll(void)
 {
-    unsigned int a;
-    unsigned int d;
+    uint32_t a;
+    uint32_t d;
 
     /* For x86_64 we need to merge the result in 2 32 bit registers
        into one clean 64 bit result. */

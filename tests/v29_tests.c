@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v29_tests.c,v 1.90 2007/11/10 11:14:59 steveu Exp $
+ * $Id: v29_tests.c,v 1.120 2009/07/09 13:52:09 steveu Exp $
  */
 
 /*! \page v29_tests_page V.29 modem tests
@@ -35,7 +35,7 @@ These tests test one way paths, as V.29 is a half-duplex modem. They allow eithe
    receive modem. It is also the only test mode provided for evaluating the
    transmit modem.
 
- - A V.29 receive modem is used to decode V.29 audio, stored in a wave file.
+ - A V.29 receive modem is used to decode V.29 audio, stored in an audio file.
    This is good way to evaluate performance with audio recorded from other
    models of modem, and with real world problematic telephone lines.
 
@@ -45,7 +45,10 @@ display of modem status is maintained.
 \section v29_tests_page_sec_2 How is it used?
 */
 
-#ifdef HAVE_CONFIG_H
+/* Enable the following definition to enable direct probing into the FAX structures */
+#define WITH_SPANDSP_INTERNALS
+
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -58,7 +61,11 @@ display of modem status is maintained.
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
-#include <audiofile.h>
+#include <sndfile.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 #include "spandsp-sim.h"
@@ -91,39 +98,45 @@ static void reporter(void *user_data, int reason, bert_results_t *results)
 {
     switch (reason)
     {
-    case BERT_REPORT_SYNCED:
-        printf("BERT report synced\n");
-        break;
-    case BERT_REPORT_UNSYNCED:
-        printf("BERT report unsync'ed\n");
-        break;
     case BERT_REPORT_REGULAR:
-        printf("BERT report regular - %d bits, %d bad bits, %d resyncs\n", results->total_bits, results->bad_bits, results->resyncs);
+        fprintf(stderr, "BERT report regular - %d bits, %d bad bits, %d resyncs\n", results->total_bits, results->bad_bits, results->resyncs);
         memcpy(&latest_results, results, sizeof(latest_results));
         break;
-    case BERT_REPORT_GT_10_2:
-        printf("BERT report > 1 in 10^2\n");
-        break;
-    case BERT_REPORT_LT_10_2:
-        printf("BERT report < 1 in 10^2\n");
-        break;
-    case BERT_REPORT_LT_10_3:
-        printf("BERT report < 1 in 10^3\n");
-        break;
-    case BERT_REPORT_LT_10_4:
-        printf("BERT report < 1 in 10^4\n");
-        break;
-    case BERT_REPORT_LT_10_5:
-        printf("BERT report < 1 in 10^5\n");
-        break;
-    case BERT_REPORT_LT_10_6:
-        printf("BERT report < 1 in 10^6\n");
-        break;
-    case BERT_REPORT_LT_10_7:
-        printf("BERT report < 1 in 10^7\n");
-        break;
     default:
-        printf("BERT report reason %d\n", reason);
+        fprintf(stderr, "BERT report %s\n", bert_event_to_str(reason));
+        break;
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
+static void v29_rx_status(void *user_data, int status)
+{
+    v29_rx_state_t *rx;
+    int i;
+    int len;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    complexi16_t *coeffs;
+#else
+    complexf_t *coeffs;
+#endif
+
+    printf("V.29 rx status is %s (%d)\n", signal_status_to_str(status), status);
+    rx = (v29_rx_state_t *) user_data;
+    switch (status)
+    {
+    case SIG_STATUS_TRAINING_SUCCEEDED:
+        printf("Training succeeded\n");
+#if defined(SPANDSP_USE_FIXED_POINT)
+        len = v29_rx_equalizer_state(rx, &coeffs);
+        printf("Equalizer:\n");
+        for (i = 0;  i < len;  i++)
+            printf("%3d (%15.5f, %15.5f)\n", i, coeffs[i].re/4096.0f, coeffs[i].im/4096.0f);
+#else
+        len = v29_rx_equalizer_state(rx, &coeffs);
+        printf("Equalizer:\n");
+        for (i = 0;  i < len;  i++)
+            printf("%3d (%15.5f, %15.5f) -> %15.5f\n", i, coeffs[i].re, coeffs[i].im, powerf(&coeffs[i]));
+#endif
         break;
     }
 }
@@ -132,43 +145,24 @@ static void reporter(void *user_data, int reason, bert_results_t *results)
 static void v29putbit(void *user_data, int bit)
 {
     v29_rx_state_t *rx;
-    int i;
-    int len;
-    complexf_t *coeffs;
     
-    rx = (v29_rx_state_t *) user_data;
     if (bit < 0)
     {
-        /* Special conditions */
-        switch (bit)
-        {
-        case PUTBIT_TRAINING_FAILED:
-            printf("Training failed\n");
-            break;
-        case PUTBIT_TRAINING_SUCCEEDED:
-            printf("Training succeeded\n");
-            len = v29_rx_equalizer_state(rx, &coeffs);
-            printf("Equalizer:\n");
-            for (i = 0;  i < len;  i++)
-                printf("%3d (%15.5f, %15.5f) -> %15.5f\n", i, coeffs[i].re, coeffs[i].im, powerf(&coeffs[i]));
-            break;
-        case PUTBIT_CARRIER_UP:
-            printf("Carrier up\n");
-            break;
-        case PUTBIT_CARRIER_DOWN:
-            printf("Carrier down\n");
-            break;
-        default:
-            printf("Eh!\n");
-            break;
-        }
+        v29_rx_status(user_data, bit);
         return;
     }
 
+    rx = (v29_rx_state_t *) user_data;
     if (decode_test_file)
         printf("Rx bit %d - %d\n", rx_bits++, bit);
     else
         bert_put_bit(&bert, bit);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void v29_tx_status(void *user_data, int status)
+{
+    printf("V.29 tx status is %s (%d)\n", signal_status_to_str(status), status);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -182,7 +176,11 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
 {
     int i;
     int len;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    complexi16_t *coeffs;
+#else
     complexf_t *coeffs;
+#endif
     float fpower;
     v29_rx_state_t *rx;
     static float smooth_power = 0.0f;
@@ -203,12 +201,13 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
             qam_monitor_update_symbol_tracking(qam_monitor, v29_rx_symbol_timing_correction(rx));
         }
 #endif
-        printf("%8d [%8.4f, %8.4f] [%8.4f, %8.4f] %8.4f %8.4f %9.4f %7.3f %7.1f\n",
+        printf("%8d [%8.4f, %8.4f] [%8.4f, %8.4f] %2x %8.4f %8.4f %9.4f %7.3f %7.4f\n",
                symbol_no,
                constel->re,
                constel->im,
                target->re,
                target->im,
+               symbol,
                fpower,
                smooth_power,
                v29_rx_carrier_frequency(rx),
@@ -217,6 +216,16 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
         symbol_no++;
         if (--update_interval <= 0)
         {
+#if defined(SPANDSP_USE_FIXED_POINT)
+            len = v29_rx_equalizer_state(rx, &coeffs);
+            printf("Equalizer A:\n");
+            for (i = 0;  i < len;  i++)
+                printf("%3d (%15.5f, %15.5f)\n", i, coeffs[i].re/4096.0f, coeffs[i].im/4096.0f);
+#if defined(ENABLE_GUI)
+            if (use_gui)
+                qam_monitor_update_int_equalizer(qam_monitor, coeffs, len);
+#endif
+#else
             len = v29_rx_equalizer_state(rx, &coeffs);
             printf("Equalizer A:\n");
             for (i = 0;  i < len;  i++)
@@ -224,6 +233,7 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
 #if defined(ENABLE_GUI)
             if (use_gui)
                 qam_monitor_update_equalizer(qam_monitor, coeffs, len);
+#endif
 #endif
             update_interval = 100;
         }
@@ -233,14 +243,13 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
 
 int main(int argc, char *argv[])
 {
-    v29_rx_state_t rx;
-    v29_tx_state_t tx;
+    v29_rx_state_t *rx;
+    v29_tx_state_t *tx;
     bert_results_t bert_results;
     int16_t gen_amp[BLOCK_LEN];
     int16_t amp[BLOCK_LEN];
-    AFfilehandle inhandle;
-    AFfilehandle outhandle;
-    AFfilesetup filesetup;
+    SNDFILE *inhandle;
+    SNDFILE *outhandle;
     int outframes;
     int samples;
     int tep;
@@ -249,12 +258,12 @@ int main(int argc, char *argv[])
     int signal_level;
     int bits_per_test;
     int line_model_no;
-    int block;
+    int block_no;
     int log_audio;
     int channel_codec;
     int rbs_pattern;
-    float x;
     int opt;
+    logging_state_t *logging;
     
     channel_codec = MUNGE_CODEC_NONE;
     rbs_pattern = 0;
@@ -267,11 +276,19 @@ int main(int argc, char *argv[])
     signal_level = -13;
     bits_per_test = 50000;
     log_audio = FALSE;
-    while ((opt = getopt(argc, argv, "b:c:d:glm:n:r:s:t")) != -1)
+    while ((opt = getopt(argc, argv, "b:B:c:d:glm:n:r:s:t")) != -1)
     {
         switch (opt)
         {
         case 'b':
+            test_bps = atoi(optarg);
+            if (test_bps != 9600  &&  test_bps != 7200  &&  test_bps != 4800)
+            {
+                fprintf(stderr, "Invalid bit rate specified\n");
+                exit(2);
+            }
+            break;
+        case 'B':
             bits_per_test = atoi(optarg);
             break;
         case 'c':
@@ -281,7 +298,12 @@ int main(int argc, char *argv[])
             decode_test_file = optarg;
             break;
         case 'g':
+#if defined(ENABLE_GUI)
             use_gui = TRUE;
+#else
+            fprintf(stderr, "Graphical monitoring not available\n");
+            exit(2);
+#endif
             break;
         case 'l':
             log_audio = TRUE;
@@ -307,76 +329,39 @@ int main(int argc, char *argv[])
             break;
         }
     }
-    argc -= optind;
-    argv += optind;
-    if (argc > 0)
-    {
-        if (strcmp(argv[0], "9600") == 0)
-            test_bps = 9600;
-        else if (strcmp(argv[0], "7200") == 0)
-            test_bps = 7200;
-        else if (strcmp(argv[0], "4800") == 0)
-            test_bps = 4800;
-        else
-        {
-            fprintf(stderr, "Invalid bit rate\n");
-            exit(2);
-        }
-    }
     inhandle = NULL;
     outhandle = NULL;
 
-    filesetup = AF_NULL_FILESETUP;
     if (log_audio)
     {
-        if ((filesetup = afNewFileSetup()) == AF_NULL_FILESETUP)
+        if ((outhandle = sf_open_telephony_write(OUT_FILE_NAME, 1)) == NULL)
         {
-            fprintf(stderr, "    Failed to create file setup\n");
-            exit(2);
-        }
-        afInitSampleFormat(filesetup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-        afInitRate(filesetup, AF_DEFAULT_TRACK, (float) SAMPLE_RATE);
-        afInitFileFormat(filesetup, AF_FILE_WAVE);
-        afInitChannels(filesetup, AF_DEFAULT_TRACK, 1);
-        if ((outhandle = afOpenFile(OUT_FILE_NAME, "w", filesetup)) == AF_NULL_FILEHANDLE)
-        {
-            fprintf(stderr, "    Cannot create wave file '%s'\n", OUT_FILE_NAME);
+            fprintf(stderr, "    Cannot create audio file '%s'\n", OUT_FILE_NAME);
             exit(2);
         }
     }
 
     if (decode_test_file)
     {
-        /* We will decode the audio from a wave file. */
-        if ((inhandle = afOpenFile(decode_test_file, "r", NULL)) == AF_NULL_FILEHANDLE)
+        /* We will decode the audio from a file. */
+        tx = NULL;
+        if ((inhandle = sf_open_telephony_read(decode_test_file, 1)) == NULL)
         {
-            fprintf(stderr, "    Cannot open wave file '%s'\n", decode_test_file);
-            exit(2);
-        }
-        if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0f)
-        {
-            printf("    Unexpected frame size in speech file '%s'\n", decode_test_file);
-            exit(2);
-        }
-        if ((x = afGetRate(inhandle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
-        {
-            printf("    Unexpected sample rate in speech file '%s'\n", decode_test_file);
-            exit(2);
-        }
-        if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0f)
-        {
-            printf("    Unexpected number of channels in speech file '%s'\n", decode_test_file);
+            fprintf(stderr, "    Cannot open audio file '%s'\n", decode_test_file);
             exit(2);
         }
     }
     else
     {
         /* We will generate V.29 audio, and add some noise to it. */
-        v29_tx_init(&tx, test_bps, tep, v29getbit, NULL);
-        v29_tx_power(&tx, signal_level);
+        tx = v29_tx_init(NULL, test_bps, tep, v29getbit, NULL);
+        v29_tx_power(tx, signal_level);
+        v29_tx_set_modem_status_handler(tx, v29_tx_status, (void *) tx);
+#if defined(WITH_SPANDSP_INTERNALS)
         /* Move the carrier off a bit */
-        tx.carrier_phase_rate = dds_phase_ratef(1710.0f);
-        tx.carrier_phase = 0;
+        tx->carrier_phase_rate = dds_phase_ratef(1710.0f);
+        tx->carrier_phase = 0;
+#endif
 
         bert_init(&bert, bits_per_test, BERT_PATTERN_ITU_O152_11, test_bps, 20);
         bert_set_report(&bert, 10000, reporter, NULL);
@@ -388,13 +373,17 @@ int main(int argc, char *argv[])
         }
     }
 
-    v29_rx_init(&rx, test_bps, v29putbit, &rx);
-    v29_rx_signal_cutoff(&rx, -45.5f);
-    v29_rx_set_qam_report_handler(&rx, qam_report, (void *) &rx);
+    rx = v29_rx_init(NULL, test_bps, v29putbit, NULL);
+    v29_rx_signal_cutoff(rx, -45.5f);
+    v29_rx_set_modem_status_handler(rx, v29_rx_status, (void *) rx);
+    v29_rx_set_qam_report_handler(rx, qam_report, (void *) rx);
+#if defined(WITH_SPANDSP_INTERNALS)
     /* Rotate the starting phase */
-    rx.carrier_phase = 0x80000000;
-    span_log_set_level(&rx.logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
-    span_log_set_tag(&rx.logging, "V.29-rx");
+    rx->carrier_phase = 0x80000000;
+#endif
+    logging = v29_rx_get_logging_state(rx);
+    span_log_set_level(logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
+    span_log_set_tag(logging, "V.29-rx");
 
 #if defined(ENABLE_GUI)
     if (use_gui)
@@ -409,14 +398,11 @@ int main(int argc, char *argv[])
 #endif
 
     memset(&latest_results, 0, sizeof(latest_results));
-    for (block = 0;  ;  block++)
+    for (block_no = 0;  ;  block_no++)
     {
         if (decode_test_file)
         {
-            samples = afReadFrames(inhandle,
-                                   AF_DEFAULT_TRACK,
-                                   amp,
-                                   BLOCK_LEN);
+            samples = sf_readf_short(inhandle, amp, BLOCK_LEN);
 #if defined(ENABLE_GUI)
             if (use_gui)
                 qam_monitor_update_audio_level(qam_monitor, amp, samples);
@@ -426,7 +412,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            samples = v29_tx(&tx, gen_amp, BLOCK_LEN);
+            samples = v29_tx(tx, gen_amp, BLOCK_LEN);
 #if defined(ENABLE_GUI)
             if (use_gui)
                 qam_monitor_update_audio_level(qam_monitor, gen_amp, samples);
@@ -435,12 +421,12 @@ int main(int argc, char *argv[])
             {
                 /* Push a little silence through, to ensure all the data bits get out of the buffers */
                 memset(amp, 0, BLOCK_LEN*sizeof(int16_t));
-                v29_rx(&rx, amp, BLOCK_LEN);
+                v29_rx(rx, amp, BLOCK_LEN);
 
                 /* Note that we might get a few bad bits as the carrier shuts down. */
                 bert_result(&bert, &bert_results);
-                fprintf(stderr, "Final result %ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, bert_results.total_bits, bert_results.bad_bits, bert_results.resyncs);
-                fprintf(stderr, "Last report  %ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, latest_results.total_bits, latest_results.bad_bits, latest_results.resyncs);
+                fprintf(stderr, "Final result %ddBm0/%ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, noise_level, bert_results.total_bits, bert_results.bad_bits, bert_results.resyncs);
+                fprintf(stderr, "Last report  %ddBm0/%ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, noise_level, latest_results.total_bits, latest_results.bad_bits, latest_results.resyncs);
                 /* See if bit errors are appearing yet. Also check we are getting enough bits out of the receiver. The last regular report
                    should be error free, though the final report will generally contain bits errors as the carrier was dying. The total
                    number of bits out of the receiver should be at least the number we sent. Also, since BERT sync should have occurred
@@ -456,10 +442,12 @@ int main(int argc, char *argv[])
                 }
                 memset(&latest_results, 0, sizeof(latest_results));
                 signal_level--;
-                v29_tx_restart(&tx, test_bps, tep);
-                v29_tx_power(&tx, signal_level);
-                v29_rx_restart(&rx, test_bps, FALSE);
-                rx.eq_put_step = rand()%(48*10/3);
+                v29_tx_restart(tx, test_bps, tep);
+                v29_tx_power(tx, signal_level);
+                v29_rx_restart(rx, test_bps, FALSE);
+#if defined(WITH_SPANDSP_INTERNALS)
+                rx->eq_put_step = rand()%(48*10/3);
+#endif
                 bert_init(&bert, bits_per_test, BERT_PATTERN_ITU_O152_11, test_bps, 20);
                 bert_set_report(&bert, 10000, reporter, NULL);
                 one_way_line_model_release(line_model);
@@ -471,13 +459,10 @@ int main(int argc, char *argv[])
             }
             if (log_audio)
             {
-                outframes = afWriteFrames(outhandle,
-                                          AF_DEFAULT_TRACK,
-                                          gen_amp,
-                                          samples);
+                outframes = sf_writef_short(outhandle, gen_amp, samples);
                 if (outframes != samples)
                 {
-                    fprintf(stderr, "    Error writing wave file\n");
+                    fprintf(stderr, "    Error writing audio file\n");
                     exit(2);
                 }
             }
@@ -487,16 +472,14 @@ int main(int argc, char *argv[])
         if (use_gui  &&  !decode_test_file)
             line_model_monitor_line_spectrum_update(amp, samples);
 #endif
-        v29_rx(&rx, amp, samples);
-        if (decode_test_file == NULL  &&  block%500 == 0)
-            printf("Noise level is %d\n", noise_level);
+        v29_rx(rx, amp, samples);
     }
     if (!decode_test_file)
     {
         bert_result(&bert, &bert_results);
         fprintf(stderr, "At completion:\n");
-        fprintf(stderr, "Final result %ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, bert_results.total_bits, bert_results.bad_bits, bert_results.resyncs);
-        fprintf(stderr, "Last report  %ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, latest_results.total_bits, latest_results.bad_bits, latest_results.resyncs);
+        fprintf(stderr, "Final result %ddBm0/%ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, noise_level, bert_results.total_bits, bert_results.bad_bits, bert_results.resyncs);
+        fprintf(stderr, "Last report  %ddBm0/%ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, noise_level, latest_results.total_bits, latest_results.bad_bits, latest_results.resyncs);
         one_way_line_model_release(line_model);
         
         if (signal_level > -43)
@@ -511,14 +494,21 @@ int main(int argc, char *argv[])
     if (use_gui)
         qam_wait_to_end(qam_monitor);
 #endif
-    if (log_audio)
+    if (decode_test_file)
     {
-        if (afCloseFile(outhandle))
+        if (sf_close(inhandle))
         {
-            fprintf(stderr, "    Cannot close wave file '%s'\n", OUT_FILE_NAME);
+            fprintf(stderr, "    Cannot close audio file '%s'\n", decode_test_file);
             exit(2);
         }
-        afFreeFileSetup(filesetup);
+    }
+    if (log_audio)
+    {
+        if (sf_close(outhandle))
+        {
+            fprintf(stderr, "    Cannot close audio file '%s'\n", OUT_FILE_NAME);
+            exit(2);
+        }
     }
     return  0;
 }

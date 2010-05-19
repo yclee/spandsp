@@ -10,16 +10,16 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Based on G.721/G.723 code which is:
@@ -48,13 +48,13 @@
  * 2550 Garcia Avenue
  * Mountain View, California  94043
  *
- * $Id: g726.c,v 1.17 2006/11/19 14:07:24 steveu Exp $
+ * $Id: g726.c,v 1.28.4.1 2009/12/28 12:20:46 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <inttypes.h>
@@ -66,6 +66,7 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
 #include "spandsp/dc_restore.h"
@@ -73,6 +74,9 @@
 #include "spandsp/bit_operations.h"
 #include "spandsp/g711.h"
 #include "spandsp/g726.h"
+
+#include "spandsp/private/bitstream.h"
+#include "spandsp/private/g726.h"
 
 /*
  * Maps G.726_16 code word to reconstructed scale factor normalized log
@@ -993,7 +997,7 @@ static int16_t g726_40_decoder(g726_state_t *s, uint8_t code)
 }
 /*- End of function --------------------------------------------------------*/
 
-g726_state_t *g726_init(g726_state_t *s, int bit_rate, int ext_coding, int packing)
+SPAN_DECLARE(g726_state_t *) g726_init(g726_state_t *s, int bit_rate, int ext_coding, int packing)
 {
     int i;
 
@@ -1048,22 +1052,28 @@ g726_state_t *g726_init(g726_state_t *s, int bit_rate, int ext_coding, int packi
         s->bits_per_sample = 5;
         break;
     }
-    bitstream_init(&s->bs);
+    bitstream_init(&s->bs, (s->packing != G726_PACKING_LEFT));
     return s;
 }
 /*- End of function --------------------------------------------------------*/
 
-int g726_release(g726_state_t *s)
+SPAN_DECLARE(int) g726_release(g726_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) g726_free(g726_state_t *s)
 {
     free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int g726_decode(g726_state_t *s,
-                int16_t amp[],
-                const uint8_t g726_data[],
-                int g726_bytes)
+SPAN_DECLARE(int) g726_decode(g726_state_t *s,
+                              int16_t amp[],
+                              const uint8_t g726_data[],
+                              int g726_bytes)
 {
     int i;
     int samples;
@@ -1116,10 +1126,10 @@ int g726_decode(g726_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int g726_encode(g726_state_t *s,
-                uint8_t g726_data[],
-                const int16_t amp[],
-                int len)
+SPAN_DECLARE(int) g726_encode(g726_state_t *s,
+                              uint8_t g726_data[],
+                              const int16_t amp[],
+                              int len)
 {
     int i;
     int g726_bytes;

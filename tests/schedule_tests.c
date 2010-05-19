@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: schedule_tests.c,v 1.15 2007/11/10 11:14:58 steveu Exp $
+ * $Id: schedule_tests.c,v 1.20 2008/11/30 05:43:37 steveu Exp $
  */
 
 /*! \page schedule_tests_page Event scheduler tests
@@ -33,7 +33,7 @@
 ???.
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
 #include "spandsp.h"
 
 uint64_t when1;

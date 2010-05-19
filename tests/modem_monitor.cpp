@@ -1,7 +1,7 @@
 /*
  * SpanDSP - a series of DSP components for telephony
  *
- * constel.cpp - Display QAM constellations, using the FLTK toolkit.
+ * modem_monitor.cpp - Display QAM constellations, using the FLTK toolkit.
  *
  * Written by Steve Underwood <steveu@coppice.org>
  *
@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: modem_monitor.cpp,v 1.13 2007/11/20 17:26:53 steveu Exp $
+ * $Id: modem_monitor.cpp,v 1.17 2008/09/04 14:40:05 steveu Exp $
  */
 
 #ifdef HAVE_CONFIG_H
@@ -30,6 +30,8 @@
 #endif
 
 #if defined(HAVE_FL_FL_H)  &&  defined(HAVE_FL_FL_CARTESIAN_H)
+
+#define __STDC_LIMIT_MACROS
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -47,10 +49,12 @@
 #include <FL/Fl_Output.H>
 #include <FL/fl_draw.H>
 
-#include "../src/spandsp/complex.h"
+#include "spandsp.h"
 
 #define SYMBOL_TRACKER_POINTS   12000
 #define CARRIER_TRACKER_POINTS  12000
+
+#define FP_FACTOR               4096
 
 struct qam_monitor_s
 {
@@ -163,9 +167,9 @@ int qam_monitor_update_equalizer(qam_monitor_t *s, const complexf_t *coeffs, int
             break;
         if (isnan(coeffs[i].im)  ||  isinf(coeffs[i].im))
             break;
-        if (coeffs[i].re < -20.0  ||  coeffs[i].re > 20.0)
+        if (coeffs[i].re < -20.0f  ||  coeffs[i].re > 20.0f)
             break;
-        if (coeffs[i].im < -20.0  ||  coeffs[i].im > 20.0)
+        if (coeffs[i].im < -20.0f  ||  coeffs[i].im > 20.0f)
             break;
     }
     if (i != len)
@@ -201,6 +205,55 @@ int qam_monitor_update_equalizer(qam_monitor_t *s, const complexf_t *coeffs, int
             max = coeffs[i].im;
     }
     
+    s->eq_x->minimum(-len/4.0);
+    s->eq_x->maximum(len/4.0);
+    s->eq_y->maximum((max == min)  ?  max + 0.2  :  max);
+    s->eq_y->minimum(min);
+    s->eq_re = new Ca_Line(len, s->eq_re_plot, 0, 0, FL_BLUE, CA_NO_POINT);
+    s->eq_im = new Ca_Line(len, s->eq_im_plot, 0, 0, FL_RED, CA_NO_POINT);
+    Fl::check();
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+int qam_monitor_update_int_equalizer(qam_monitor_t *s, const complexi16_t *coeffs, int len)
+{
+    int i;
+    float min;
+    float max;
+
+    if (s->eq_re)
+        delete s->eq_re;
+    if (s->eq_im)
+        delete s->eq_im;
+
+    s->canvas_eq->current(s->canvas_eq);
+    i = 0;
+    min = coeffs[i].re;
+    if (min > coeffs[i].im)
+        min = coeffs[i].im;
+    max = coeffs[i].re;
+    if (max < coeffs[i].im)
+        max = coeffs[i].im;
+    for (i = 0;  i < len;  i++)
+    {
+        s->eq_re_plot[2*i] = (i - len/2)/2.0f;
+        s->eq_re_plot[2*i + 1] = coeffs[i].re/(float) FP_FACTOR;
+        if (min > coeffs[i].re)
+            min = coeffs[i].re;
+        if (max < coeffs[i].re)
+            max = coeffs[i].re;
+
+        s->eq_im_plot[2*i] = (i - len/2)/2.0f;
+        s->eq_im_plot[2*i + 1] = coeffs[i].im/(float) FP_FACTOR;
+        if (min > coeffs[i].im)
+            min = coeffs[i].im;
+        if (max < coeffs[i].im)
+            max = coeffs[i].im;
+    }
+    min /= (float) FP_FACTOR;
+    max /= (float) FP_FACTOR;
+
     s->eq_x->minimum(-len/4.0);
     s->eq_x->maximum(len/4.0);
     s->eq_y->maximum((max == min)  ?  max + 0.2  :  max);

@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: crc.c,v 1.1 2007/07/27 11:52:04 steveu Exp $
+ * $Id: crc.c,v 1.6 2009/02/03 16:28:39 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <inttypes.h>
@@ -107,7 +107,7 @@ static const uint32_t crc_itu32_table[] =
     0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
 };
 
-uint32_t crc_itu32_calc(const uint8_t *buf, int len, uint32_t crc)
+SPAN_DECLARE(uint32_t) crc_itu32_calc(const uint8_t *buf, int len, uint32_t crc)
 {
     int i;
 
@@ -117,7 +117,7 @@ uint32_t crc_itu32_calc(const uint8_t *buf, int len, uint32_t crc)
 }
 /*- End of function --------------------------------------------------------*/
 
-int crc_itu32_append(uint8_t *buf, int len)
+SPAN_DECLARE(int) crc_itu32_append(uint8_t *buf, int len)
 {
     uint32_t crc;
     int new_len;
@@ -136,7 +136,7 @@ int crc_itu32_append(uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int crc_itu32_check(const uint8_t *buf, int len)
+SPAN_DECLARE(int) crc_itu32_check(const uint8_t *buf, int len)
 {
     uint32_t crc;
     int i;
@@ -184,7 +184,7 @@ static const uint16_t crc_itu16_table[] =
     0x7BC7, 0x6A4E, 0x58D5, 0x495C, 0x3DE3, 0x2C6A, 0x1EF1, 0x0F78
 };
 
-uint16_t crc_itu16_calc(const uint8_t *buf, int len, uint16_t crc)
+SPAN_DECLARE(uint16_t) crc_itu16_calc(const uint8_t *buf, int len, uint16_t crc)
 {
     int i;
 
@@ -194,7 +194,7 @@ uint16_t crc_itu16_calc(const uint8_t *buf, int len, uint16_t crc)
 }
 /*- End of function --------------------------------------------------------*/
 
-int crc_itu16_append(uint8_t *buf, int len)
+SPAN_DECLARE(int) crc_itu16_append(uint8_t *buf, int len)
 {
     uint16_t crc;
     int new_len;
@@ -211,7 +211,7 @@ int crc_itu16_append(uint8_t *buf, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-int crc_itu16_check(const uint8_t *buf, int len)
+SPAN_DECLARE(int) crc_itu16_check(const uint8_t *buf, int len)
 {
     uint16_t crc;
     int i;

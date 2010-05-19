@@ -10,25 +10,25 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: dds_int.c,v 1.4 2007/09/06 12:24:54 steveu Exp $
+ * $Id: dds_int.c,v 1.16 2009/02/21 04:27:46 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <inttypes.h>
@@ -38,6 +38,7 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
 #include "spandsp/complex.h"
@@ -189,39 +190,37 @@ static const int16_t sine_table[DDS_STEPS] =
      32767,
 };
 
-int32_t dds_phase_rate(float frequency)
+SPAN_DECLARE(int32_t) dds_phase_rate(float frequency)
 {
     return (int32_t) (frequency*65536.0f*65536.0f/SAMPLE_RATE);
 }
 /*- End of function --------------------------------------------------------*/
 
-float dds_frequency(int32_t phase_rate)
+SPAN_DECLARE(float) dds_frequency(int32_t phase_rate)
 {
     return (float) phase_rate*(float) SAMPLE_RATE/(65536.0f*65536.0f);
 }
 /*- End of function --------------------------------------------------------*/
 
-int dds_scaling_dbm0(float level)
+SPAN_DECLARE(int16_t) dds_scaling_dbm0(float level)
 {
-    return (int) (powf(10.0f, (level - DBM0_MAX_SINE_POWER)/20.0f)*32767.0f);
+    return (int16_t) (powf(10.0f, (level - DBM0_MAX_SINE_POWER)/20.0f)*32767.0f);
 }
 /*- End of function --------------------------------------------------------*/
 
-int dds_scaling_dbov(float level)
+SPAN_DECLARE(int16_t) dds_scaling_dbov(float level)
 {
-    return (int) (powf(10.0f, (level - DBOV_MAX_SINE_POWER)/20.0f)*32767.0f);
+    return (int16_t) (powf(10.0f, (level - DBOV_MAX_SINE_POWER)/20.0f)*32767.0f);
 }
 /*- End of function --------------------------------------------------------*/
 
-int16_t dds_lookup(uint32_t phase)
+SPAN_DECLARE(int16_t) dds_lookup(uint32_t phase)
 {
     uint32_t step;
-    uint32_t fred;
     int16_t amp;
 
     phase >>= DDS_SHIFT;
     step = phase & (DDS_STEPS - 1);
-    fred = step;
     if ((phase & DDS_STEPS))
         step = (DDS_STEPS - 1) - step;
     amp = sine_table[step];
@@ -231,19 +230,19 @@ int16_t dds_lookup(uint32_t phase)
 }
 /*- End of function --------------------------------------------------------*/
 
-int16_t dds_offset(uint32_t phase_acc, int32_t phase_offset)
+SPAN_DECLARE(int16_t) dds_offset(uint32_t phase_acc, int32_t phase_offset)
 {
     return dds_lookup(phase_acc + phase_offset);
 }
 /*- End of function --------------------------------------------------------*/
 
-void dds_advance(uint32_t *phase_acc, int32_t phase_rate)
+SPAN_DECLARE(void) dds_advance(uint32_t *phase_acc, int32_t phase_rate)
 {
     *phase_acc += phase_rate;
 }
 /*- End of function --------------------------------------------------------*/
 
-int16_t dds(uint32_t *phase_acc, int32_t phase_rate)
+SPAN_DECLARE(int16_t) dds(uint32_t *phase_acc, int32_t phase_rate)
 {
     int16_t amp;
 
@@ -253,17 +252,23 @@ int16_t dds(uint32_t *phase_acc, int32_t phase_rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-int16_t dds_mod(uint32_t *phase_acc, int32_t phase_rate, int scale, int32_t phase)
+SPAN_DECLARE(int16_t) dds_mod(uint32_t *phase_acc, int32_t phase_rate, int16_t scale, int32_t phase)
 {
     int16_t amp;
 
-    amp = (int16_t) ((dds_lookup(*phase_acc + phase)*scale) >> 15);
+    amp = (int16_t) (((int32_t) dds_lookup(*phase_acc + phase)*(int32_t) scale) >> 15);
     *phase_acc += phase_rate;
     return amp;
 }
 /*- End of function --------------------------------------------------------*/
 
-complexi_t dds_complexi(uint32_t *phase_acc, int32_t phase_rate)
+SPAN_DECLARE(complexi_t) dds_lookup_complexi(uint32_t phase)
+{
+    return complex_seti(dds_lookup(phase + (1 << 30)), dds_lookup(phase));
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi_t) dds_complexi(uint32_t *phase_acc, int32_t phase_rate)
 {
     complexi_t amp;
 
@@ -273,12 +278,66 @@ complexi_t dds_complexi(uint32_t *phase_acc, int32_t phase_rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-complexi_t dds_complexi_mod(uint32_t *phase_acc, int32_t phase_rate, int scale, int32_t phase)
+SPAN_DECLARE(complexi_t) dds_complexi_mod(uint32_t *phase_acc, int32_t phase_rate, int16_t scale, int32_t phase)
 {
     complexi_t amp;
 
-    amp = complex_seti((dds_lookup(*phase_acc + phase + (1 << 30))*scale) >> 15,
-                       (dds_lookup(*phase_acc + phase)*scale) >> 15);
+    amp = complex_seti(((int32_t) dds_lookup(*phase_acc + phase + (1 << 30))*(int32_t) scale) >> 15,
+                       ((int32_t) dds_lookup(*phase_acc + phase)*(int32_t) scale) >> 15);
+    *phase_acc += phase_rate;
+    return amp;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi16_t) dds_lookup_complexi16(uint32_t phase)
+{
+    return complex_seti16(dds_lookup(phase + (1 << 30)), dds_lookup(phase));
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi16_t) dds_complexi16(uint32_t *phase_acc, int32_t phase_rate)
+{
+    complexi16_t amp;
+
+    amp = complex_seti16(dds_lookup(*phase_acc + (1 << 30)), dds_lookup(*phase_acc));
+    *phase_acc += phase_rate;
+    return amp;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi16_t) dds_complexi16_mod(uint32_t *phase_acc, int32_t phase_rate, int16_t scale, int32_t phase)
+{
+    complexi16_t amp;
+
+    amp = complex_seti16((int16_t) (((int32_t) dds_lookup(*phase_acc + phase + (1 << 30))*(int32_t) scale) >> 15),
+                         (int16_t) (((int32_t) dds_lookup(*phase_acc + phase)*(int32_t) scale) >> 15));
+    *phase_acc += phase_rate;
+    return amp;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi32_t) dds_lookup_complexi32(uint32_t phase)
+{
+    return complex_seti32(dds_lookup(phase + (1 << 30)), dds_lookup(phase));
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi32_t) dds_complexi32(uint32_t *phase_acc, int32_t phase_rate)
+{
+    complexi32_t amp;
+
+    amp = complex_seti32(dds_lookup(*phase_acc + (1 << 30)), dds_lookup(*phase_acc));
+    *phase_acc += phase_rate;
+    return amp;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(complexi32_t) dds_complexi32_mod(uint32_t *phase_acc, int32_t phase_rate, int16_t scale, int32_t phase)
+{
+    complexi32_t amp;
+
+    amp = complex_seti32(((int32_t) dds_lookup(*phase_acc + phase + (1 << 30))*(int32_t) scale) >> 15,
+                         ((int32_t) dds_lookup(*phase_acc + phase)*(int32_t) scale) >> 15);
     *phase_acc += phase_rate;
     return amp;
 }

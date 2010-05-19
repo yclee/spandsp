@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: super_tone_rx_tests.c,v 1.23 2007/11/10 11:14:58 steveu Exp $
+ * $Id: super_tone_rx_tests.c,v 1.33 2009/06/02 14:55:36 steveu Exp $
  */
 
 /*! \file */
@@ -31,7 +31,7 @@
 \section super_tone_rx_tests_page_sec_1 What does it do?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -42,8 +42,7 @@
 #include <strings.h>
 #include <ctype.h>
 #include <time.h>
-#include <sys/socket.h>
-#include <audiofile.h>
+#include <sndfile.h>
 
 #if defined(HAVE_LIBXML_XMLMEMORY_H)
 #include <libxml/xmlmemory.h>
@@ -55,12 +54,17 @@
 #include <libxml/xinclude.h>
 #endif
 
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
+
 #include "spandsp.h"
+#include "spandsp-sim.h"
 
 #define IN_FILE_NAME    "super_tone.wav"
 
-#define MITEL_DIR       "../itutests/mitel/"
-#define BELLCORE_DIR	"../itutests/bellcore/"
+#define MITEL_DIR       "../test-data/mitel/"
+#define BELLCORE_DIR	"../test-data/bellcore/"
 
 const char *bellcore_files[] =
 {
@@ -76,7 +80,7 @@ const char *bellcore_files[] =
 
 const char *tone_names[20] = {NULL};
 
-AFfilehandle inhandle;
+SNDFILE *inhandle;
 
 super_tone_rx_segment_t tone_segments[20][10];
 
@@ -264,7 +268,7 @@ static void get_tone_set(super_tone_rx_descriptor_t *desc, const char *tone_file
     xmlDocPtr doc;
     xmlNsPtr ns;
     xmlNodePtr cur;
-#if 0
+#if 1
     xmlValidCtxt valid;
 #endif
     xmlChar *x;
@@ -272,15 +276,14 @@ static void get_tone_set(super_tone_rx_descriptor_t *desc, const char *tone_file
     ns = NULL;
     xmlKeepBlanksDefault(0);
     xmlCleanupParser();
-    doc = xmlParseFile(tone_file);
-    if (doc == NULL)
+    if ((doc = xmlParseFile(tone_file)) == NULL)
     {
         fprintf(stderr, "No document\n");
         exit(2);
     }
     /*endif*/
     xmlXIncludeProcess(doc);
-#if 0
+#if 1
     if (!xmlValidateDocument(&valid, doc))
     {
         fprintf(stderr, "Invalid document\n");
@@ -375,24 +378,9 @@ int main(int argc, char *argv[])
     super_tone_rx_state_t *super;
     super_tone_rx_descriptor_t desc;
 
-    if ((inhandle = afOpenFile(IN_FILE_NAME, "r", 0)) == AF_NULL_FILEHANDLE)
+    if ((inhandle = sf_open_telephony_read(IN_FILE_NAME, 1)) == NULL)
     {
-        fprintf(stderr, "    Cannot open wave file '%s'\n", IN_FILE_NAME);
-        exit(2);
-    }
-    if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0)
-    {
-        printf("    Unexpected frame size in wave file '%s'\n", IN_FILE_NAME);
-        exit(2);
-    }
-    if ((x = afGetRate(inhandle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
-    {
-        printf("    Unexpected sample rate in wave file '%s'\n", IN_FILE_NAME);
-        exit(2);
-    }
-    if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0)
-    {
-        printf("    Unexpected number of channels in wave file '%s'\n", IN_FILE_NAME);
+        fprintf(stderr, "    Cannot open audio file '%s'\n", IN_FILE_NAME);
         exit(2);
     }
     super_tone_rx_make_descriptor(&desc);
@@ -408,7 +396,7 @@ int main(int argc, char *argv[])
     super_tone_rx_segment_callback(super, tone_segment);
     awgn_init_dbm0(&noise_source, 1234567, -30.0f);
     printf("Processing file\n");
-    while ((frames = afReadFrames(inhandle, AF_DEFAULT_TRACK, amp, 8000)))
+    while ((frames = sf_readf_short(inhandle, amp, 8000)))
     {
         /* Add some noise to the signal for a more meaningful test. */
         //for (sample = 0;  sample < frames;  sample++)
@@ -419,7 +407,7 @@ int main(int argc, char *argv[])
             sample += x;
         }
     }
-    if (afCloseFile(inhandle))
+    if (sf_close(inhandle))
     {
         fprintf(stderr, "    Cannot close audio file '%s'\n", IN_FILE_NAME);
         exit(2);
@@ -428,27 +416,12 @@ int main(int argc, char *argv[])
     /* Test for voice immunity */
     for (j = 0;  bellcore_files[j][0];  j++)
     {
-        if ((inhandle = afOpenFile(bellcore_files[j], "r", 0)) == AF_NULL_FILEHANDLE)
+        if ((inhandle = sf_open_telephony_read(bellcore_files[j], 1)) == NULL)
         {
-            printf("    Cannot open wave file '%s'\n", bellcore_files[j]);
+            printf("    Cannot open audio file '%s'\n", bellcore_files[j]);
             exit(2);
         }
-        if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0)
-        {
-            printf("    Unexpected frame size in wave file '%s'\n", bellcore_files[j]);
-            exit(2);
-        }
-        if ((x = afGetRate(inhandle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
-        {
-            printf("    Unexpected sample rate in wave file '%s'\n", bellcore_files[j]);
-            exit(2);
-        }
-        if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0)
-        {
-            printf("    Unexpected number of channels in wave file '%s'\n", bellcore_files[j]);
-            exit(2);
-        }
-        while ((frames = afReadFrames(inhandle, AF_DEFAULT_TRACK, amp, 8000)))
+        while ((frames = sf_readf_short(inhandle, amp, 8000)))
         {
             for (sample = 0;  sample < frames;  )
             {
@@ -456,7 +429,7 @@ int main(int argc, char *argv[])
                 sample += x;
             }
     	}
-        if (afCloseFile(inhandle) != 0)
+        if (sf_close(inhandle) != 0)
     	{
     	    printf("    Cannot close speech file '%s'\n", bellcore_files[j]);
             exit(2);

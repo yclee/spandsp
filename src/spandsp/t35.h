@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: t35.h,v 1.11 2007/04/08 08:16:18 steveu Exp $
+ * $Id: t35.h,v 1.15 2009/01/31 08:48:11 steveu Exp $
  */
 
 /*! \file */
@@ -38,6 +38,8 @@
 ???.
 */
 
+/*! A table of the country names associated with each possible value of the T.35 country code
+    selector octet. */
 extern const char *t35_country_codes[256];
 
 #if defined(__cplusplus)
@@ -61,7 +63,7 @@ extern "C"
            If the model is not identified, NULL will be returned.
     \return TRUE if the machine was identified, otherwise FALSE.
 */
-int t35_decode(const uint8_t *msg, int len, const char **country, const char **vendor, const char **model);
+SPAN_DECLARE(int) t35_decode(const uint8_t *msg, int len, const char **country, const char **vendor, const char **model);
 
 #if defined(__cplusplus)
 }

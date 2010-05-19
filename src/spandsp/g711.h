@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: g711.h,v 1.7 2007/08/25 05:00:30 steveu Exp $
+ * $Id: g711.h,v 1.19 2009/04/12 09:12:10 steveu Exp $
  */
 
 /*! \file */
@@ -51,6 +51,23 @@ specification by other means.
 
 #if !defined(_SPANDSP_G711_H_)
 #define _SPANDSP_G711_H_
+
+/* The usual values to use on idle channels, to emulate silence */
+/*! Idle value for A-law channels */
+#define G711_ALAW_IDLE_OCTET        0x5D
+/*! Idle value for u-law channels */
+#define G711_ULAW_IDLE_OCTET        0xFF
+
+enum
+{
+    G711_ALAW = 0,
+    G711_ULAW
+};
+
+/*!
+    G.711 state
+ */
+typedef struct g711_state_s g711_state_t;
 
 #if defined(__cplusplus)
 extern "C"
@@ -94,8 +111,10 @@ extern "C"
  * John Wiley & Sons, pps 98-111 and 472-476.
  */
 
-//#define ULAW_ZEROTRAP                 /* turn on the trap as per the MIL-STD */
-#define ULAW_BIAS        0x84           /* Bias for linear code. */
+/* Enable the trap as per the MIL-STD */
+//#define ULAW_ZEROTRAP
+/*! Bias for u-law encoding from linear. */
+#define ULAW_BIAS        0x84
 
 /*! \brief Encode a linear sample to u-law
     \param linear The sample to encode.
@@ -175,6 +194,7 @@ static __inline__ int16_t ulaw_to_linear(uint8_t ulaw)
  * John Wiley & Sons, pps 98-111 and 472-476.
  */
 
+/*! The A-law alternate mark inversion mask */
 #define ALAW_AMI_MASK       0x55
 
 /*! \brief Encode a linear sample to A-law
@@ -239,13 +259,65 @@ static __inline__ int16_t alaw_to_linear(uint8_t alaw)
     \param alaw The A-law sample to transcode.
     \return The best matching u-law value.
 */
-uint8_t alaw_to_ulaw(uint8_t alaw);
+SPAN_DECLARE(uint8_t) alaw_to_ulaw(uint8_t alaw);
 
 /*! \brief Transcode from u-law to A-law, using the procedure defined in G.711.
-    \param alaw The u-law sample to transcode.
+    \param ulaw The u-law sample to transcode.
     \return The best matching A-law value.
 */
-uint8_t ulaw_to_alaw(uint8_t ulaw);
+SPAN_DECLARE(uint8_t) ulaw_to_alaw(uint8_t ulaw);
+
+/*! \brief Decode from u-law or A-law to linear.
+    \param s The G.711 context.
+    \param amp The linear audio buffer.
+    \param g711_data The G.711 data.
+    \param g711_bytes The number of G.711 samples to decode.
+    \return The number of samples of linear audio produced.
+*/
+SPAN_DECLARE(int) g711_decode(g711_state_t *s,
+                              int16_t amp[],
+                              const uint8_t g711_data[],
+                              int g711_bytes);
+
+/*! \brief Encode from linear to u-law or A-law.
+    \param s The G.711 context.
+    \param g711_data The G.711 data.
+    \param amp The linear audio buffer.
+    \param len The number of samples to encode.
+    \return The number of G.711 samples produced.
+*/
+SPAN_DECLARE(int) g711_encode(g711_state_t *s,
+                              uint8_t g711_data[],
+                              const int16_t amp[],
+                              int len);
+
+/*! \brief Transcode between u-law and A-law.
+    \param s The G.711 context.
+    \param g711_out The resulting G.711 data.
+    \param g711_in The original G.711 data.
+    \param g711_bytes The number of G.711 samples to transcode.
+    \return The number of G.711 samples produced.
+*/
+SPAN_DECLARE(int) g711_transcode(g711_state_t *s,
+                                 uint8_t g711_out[],
+                                 const uint8_t g711_in[],
+                                 int g711_bytes);
+
+/*! Initialise a G.711 encode or decode context.
+    \param s The G.711 context.
+    \param mode The G.711 mode.
+    \return A pointer to the G.711 context, or NULL for error. */
+SPAN_DECLARE(g711_state_t *) g711_init(g711_state_t *s, int mode);
+
+/*! Release a G.711 encode or decode context.
+    \param s The G.711 context.
+    \return 0 for OK. */
+SPAN_DECLARE(int) g711_release(g711_state_t *s);
+
+/*! Free a G.711 encode or decode context.
+    \param s The G.711 context.
+    \return 0 for OK. */
+SPAN_DECLARE(int) g711_free(g711_state_t *s);
 
 #if defined(__cplusplus)
 }

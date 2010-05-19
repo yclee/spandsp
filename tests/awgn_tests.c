@@ -22,20 +22,24 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: awgn_tests.c,v 1.13 2007/11/10 11:14:57 steveu Exp $
+ * $Id: awgn_tests.c,v 1.18 2008/11/30 12:38:27 steveu Exp $
  */
 
 /*! \page awgn_tests_page AWGN tests
 \section awgn_tests_page_sec_1 What does it do?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
 

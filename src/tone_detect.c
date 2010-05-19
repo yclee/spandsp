@@ -10,24 +10,24 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: tone_detect.c,v 1.39 2007/09/07 13:22:25 steveu Exp $
+ * $Id: tone_detect.c,v 1.53 2009/04/12 09:12:10 steveu Exp $
  */
  
-/*! \file tone_detect.h */
+/*! \file */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -39,6 +39,7 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -50,15 +51,17 @@
 #include "spandsp/tone_detect.h"
 #include "spandsp/tone_generate.h"
 
+#include "spandsp/private/tone_detect.h"
+
 #if !defined(M_PI)
 /* C99 systems may not define M_PI */
 #define M_PI 3.14159265358979323846264338327
 #endif
 
-void make_goertzel_descriptor(goertzel_descriptor_t *t, float freq, int samples)
+SPAN_DECLARE(void) make_goertzel_descriptor(goertzel_descriptor_t *t, float freq, int samples)
 {
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    t->fac = 4096.0f*2.0f*cosf(2.0f*M_PI*(freq/(float) SAMPLE_RATE));
+#if defined(SPANDSP_USE_FIXED_POINT)
+    t->fac = 16383.0f*2.0f*cosf(2.0f*M_PI*(freq/(float) SAMPLE_RATE));
 #else
     t->fac = 2.0f*cosf(2.0f*M_PI*(freq/(float) SAMPLE_RATE));
 #endif
@@ -66,36 +69,63 @@ void make_goertzel_descriptor(goertzel_descriptor_t *t, float freq, int samples)
 }
 /*- End of function --------------------------------------------------------*/
 
-goertzel_state_t *goertzel_init(goertzel_state_t *s,
-                                goertzel_descriptor_t *t)
+SPAN_DECLARE(goertzel_state_t *) goertzel_init(goertzel_state_t *s,
+                                               goertzel_descriptor_t *t)
 {
-    if (s  ||  (s = malloc(sizeof(goertzel_state_t))))
+    if (s == NULL)
     {
-        s->v2 =
-        s->v3 = 0.0;
-        s->fac = t->fac;
-        s->samples = t->samples;
-        s->current_sample = 0;
+        if ((s = (goertzel_state_t *) malloc(sizeof(*s))) == NULL)
+            return NULL;
     }
+#if defined(SPANDSP_USE_FIXED_POINT)
+    s->v2 =
+    s->v3 = 0;
+#else
+    s->v2 =
+    s->v3 = 0.0f;
+#endif
+    s->fac = t->fac;
+    s->samples = t->samples;
+    s->current_sample = 0;
     return s;
 }
 /*- End of function --------------------------------------------------------*/
 
-void goertzel_reset(goertzel_state_t *s)
+SPAN_DECLARE(int) goertzel_release(goertzel_state_t *s)
 {
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) goertzel_free(goertzel_state_t *s)
+{
+    if (s)
+        free(s);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(void) goertzel_reset(goertzel_state_t *s)
+{
+#if defined(SPANDSP_USE_FIXED_POINT)
     s->v2 =
-    s->v3 = 0.0;
+    s->v3 = 0;
+#else
+    s->v2 =
+    s->v3 = 0.0f;
+#endif
     s->current_sample = 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-int goertzel_update(goertzel_state_t *s,
-                    const int16_t amp[],
-                    int samples)
+SPAN_DECLARE(int) goertzel_update(goertzel_state_t *s,
+                                  const int16_t amp[],
+                                  int samples)
 {
     int i;
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    int32_t v1;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int16_t x;
+    int16_t v1;
 #else
     float v1;
 #endif
@@ -106,8 +136,13 @@ int goertzel_update(goertzel_state_t *s,
     {
         v1 = s->v2;
         s->v2 = s->v3;
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-        s->v3 = ((s->fac*s->v2) >> 12) - v1 + (amp[i] >> 8);
+#if defined(SPANDSP_USE_FIXED_POINT)
+        x = (((int32_t) s->fac*s->v2) >> 14);
+        /* Scale down the input signal to avoid overflows. 9 bits is enough to
+           monitor the signals of interest with adequate dynamic range and
+           resolution. In telephony we generally only start with 13 or 14 bits,
+           anyway. */
+        s->v3 = x - v1 + (amp[i] >> 7);
 #else
         s->v3 = s->fac*s->v2 - v1 + amp[i];
 #endif
@@ -117,10 +152,16 @@ int goertzel_update(goertzel_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-float goertzel_result(goertzel_state_t *s)
+#if defined(SPANDSP_USE_FIXED_POINT)
+SPAN_DECLARE(int32_t) goertzel_result(goertzel_state_t *s)
+#else
+SPAN_DECLARE(float) goertzel_result(goertzel_state_t *s)
+#endif
 {
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    int32_t v1;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int16_t v1;
+    int32_t x;
+    int32_t y;
 #else
     float v1;
 #endif
@@ -128,23 +169,38 @@ float goertzel_result(goertzel_state_t *s)
     /* Push a zero through the process to finish things off. */
     v1 = s->v2;
     s->v2 = s->v3;
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    s->v3 = ((s->fac*s->v2) >> 12) - v1;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    x = (((int32_t) s->fac*s->v2) >> 14);
+    s->v3 = x - v1;
 #else
     s->v3 = s->fac*s->v2 - v1;
 #endif
     /* Now calculate the non-recursive side of the filter. */
     /* The result here is not scaled down to allow for the magnification
        effect of the filter (the usual DFT magnification effect). */
-#if defined(SPANDSP_USE_FIXED_POINT_EXPERIMENTAL)
-    return s->v3*s->v3 + s->v2*s->v2 - ((s->v2*s->v3) >> 12)*s->fac;
+#if defined(SPANDSP_USE_FIXED_POINT)
+    x = (int32_t) s->v3*s->v3;
+    y = (int32_t) s->v2*s->v2;
+    x += y;
+    y = ((int32_t) s->v3*s->fac) >> 14;
+    y *= s->v2;
+    x -= y;
+    x <<= 1;
+    goertzel_reset(s);
+    /* The number returned in a floating point build will be 16384^2 times
+       as big as for a fixed point build, due to the 14 bit shifts
+       (or the square of the 7 bit shifts, depending how you look at it). */
+    return x;
 #else
-    return s->v3*s->v3 + s->v2*s->v2 - s->v2*s->v3*s->fac;
+    v1 = s->v3*s->v3 + s->v2*s->v2 - s->v2*s->v3*s->fac;
+    v1 *= 2.0;
+    goertzel_reset(s);
+    return v1;
 #endif
 }
 /*- End of function --------------------------------------------------------*/
 
-complexf_t periodogram(const complexf_t coeffs[], const complexf_t amp[], int len)
+SPAN_DECLARE(complexf_t) periodogram(const complexf_t coeffs[], const complexf_t amp[], int len)
 {
     complexf_t sum;
     complexf_t diff;
@@ -163,7 +219,7 @@ complexf_t periodogram(const complexf_t coeffs[], const complexf_t amp[], int le
 }
 /*- End of function --------------------------------------------------------*/
 
-int periodogram_prepare(complexf_t sum[], complexf_t diff[], const complexf_t amp[], int len)
+SPAN_DECLARE(int) periodogram_prepare(complexf_t sum[], complexf_t diff[], const complexf_t amp[], int len)
 {
     int i;
 
@@ -176,7 +232,7 @@ int periodogram_prepare(complexf_t sum[], complexf_t diff[], const complexf_t am
 }
 /*- End of function --------------------------------------------------------*/
 
-complexf_t periodogram_apply(const complexf_t coeffs[], const complexf_t sum[], const complexf_t diff[], int len)
+SPAN_DECLARE(complexf_t) periodogram_apply(const complexf_t coeffs[], const complexf_t sum[], const complexf_t diff[], int len)
 {
     complexf_t x;
     int i;
@@ -191,7 +247,7 @@ complexf_t periodogram_apply(const complexf_t coeffs[], const complexf_t sum[], 
 }
 /*- End of function --------------------------------------------------------*/
 
-int periodogram_generate_coeffs(complexf_t coeffs[], float freq, int sample_rate, int window_len)
+SPAN_DECLARE(int) periodogram_generate_coeffs(complexf_t coeffs[], float freq, int sample_rate, int window_len)
 {
     float window;
     float sum;
@@ -220,7 +276,7 @@ int periodogram_generate_coeffs(complexf_t coeffs[], float freq, int sample_rate
 }
 /*- End of function --------------------------------------------------------*/
 
-float periodogram_generate_phase_offset(complexf_t *offset, float freq, int sample_rate, int interval)
+SPAN_DECLARE(float) periodogram_generate_phase_offset(complexf_t *offset, float freq, int sample_rate, int interval)
 {
     float x;
 
@@ -232,10 +288,13 @@ float periodogram_generate_phase_offset(complexf_t *offset, float freq, int samp
 }
 /*- End of function --------------------------------------------------------*/
 
-float periodogram_freq_error(const complexf_t *phase_offset, float scale, const complexf_t *last_result, const complexf_t *result)
+SPAN_DECLARE(float) periodogram_freq_error(const complexf_t *phase_offset, float scale, const complexf_t *last_result, const complexf_t *result)
 {
     complexf_t prediction;
 
+    /* Rotate the last result by the expected phasor offset to the current result. Then
+       find the difference between that predicted position, and the actual one. When
+       scaled by the current signal level, this gives us the frequency error. */
     prediction = complex_mulf(last_result, phase_offset);
     return scale*(result->im*prediction.re - result->re*prediction.im)/(result->re*result->re + result->im*result->im);
 }

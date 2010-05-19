@@ -10,19 +10,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: awgn.c,v 1.12 2007/11/26 13:28:58 steveu Exp $
+ * $Id: awgn.c,v 1.22 2009/02/10 13:06:46 steveu Exp $
  */
 
 /*! \file */
@@ -42,8 +42,8 @@
    The non-core nature of this code also explains why it is unlikely
    to ever be optimised. */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <stdlib.h>
@@ -54,10 +54,14 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 
 #include "spandsp/telephony.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/fast_convert.h"
+#include "spandsp/saturated.h"
 #include "spandsp/awgn.h"
+
+#include "spandsp/private/awgn.h"
 
 /* Gaussian noise generator constants */
 #define M1 259200
@@ -92,13 +96,7 @@ static double ran1(awgn_state_t *s)
 }
 /*- End of function --------------------------------------------------------*/
 
-awgn_state_t *awgn_init_dbm0(awgn_state_t *s, int idum, float level)
-{
-    return awgn_init_dbov(s, idum, level - DBM0_MAX_POWER);
-}
-/*- End of function --------------------------------------------------------*/
-
-awgn_state_t *awgn_init_dbov(awgn_state_t *s, int idum, float level)
+SPAN_DECLARE(awgn_state_t *) awgn_init_dbov(awgn_state_t *s, int idum, float level)
 {
     int j;
 
@@ -130,7 +128,26 @@ awgn_state_t *awgn_init_dbov(awgn_state_t *s, int idum, float level)
 }
 /*- End of function --------------------------------------------------------*/
 
-int16_t awgn(awgn_state_t *s)
+SPAN_DECLARE(awgn_state_t *) awgn_init_dbm0(awgn_state_t *s, int idum, float level)
+{
+    return awgn_init_dbov(s, idum, level - DBM0_MAX_POWER);
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) awgn_release(awgn_state_t *s)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) awgn_free(awgn_state_t *s)
+{
+    free(s);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int16_t) awgn(awgn_state_t *s)
 {
     double fac;
     double r;

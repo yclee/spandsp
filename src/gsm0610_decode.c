@@ -10,28 +10,28 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * This code is based on the widely used GSM 06.10 code available from
  * http://kbs.cs.tu-berlin.de/~jutta/toast.html
  *
- * $Id: gsm0610_decode.c,v 1.14 2007/08/21 14:25:54 steveu Exp $
+ * $Id: gsm0610_decode.c,v 1.25 2009/02/03 16:28:39 steveu Exp $
  */
 
 /*! \file */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
 #include <assert.h>
@@ -42,12 +42,14 @@
 #if defined(HAVE_MATH_H)
 #include <math.h>
 #endif
+#include "floating_fudge.h"
 #include <stdlib.h>
 #include <memory.h>
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/bitstream.h"
-#include "spandsp/dc_restore.h"
+#include "spandsp/saturated.h"
 #include "spandsp/gsm0610.h"
 
 #include "gsm0610_local.h"
@@ -65,9 +67,9 @@ static void postprocessing(gsm0610_state_t *s, int16_t amp[])
     {
         tmp = gsm_mult_r(msr, 28180);
         /* De-emphasis */
-        msr = gsm_add(amp[k], tmp);
+        msr = saturated_add16(amp[k], tmp);
         /* Truncation & upscaling */
-        amp[k] = (int16_t) (gsm_add(msr, msr) & 0xFFF8);
+        amp[k] = (int16_t) (saturated_add16(msr, msr) & 0xFFF8);
     }
     /*endfor*/
     s->msr = msr;
@@ -100,7 +102,7 @@ static void decode_a_frame(gsm0610_state_t *s,
 }
 /*- End of function --------------------------------------------------------*/
 
-int gsm0610_unpack_none(gsm0610_frame_t *s, const uint8_t c[])
+SPAN_DECLARE(int) gsm0610_unpack_none(gsm0610_frame_t *s, const uint8_t c[])
 {
     int i;
     int j;
@@ -122,7 +124,7 @@ int gsm0610_unpack_none(gsm0610_frame_t *s, const uint8_t c[])
 }
 /*- End of function --------------------------------------------------------*/
 
-int gsm0610_unpack_wav49(gsm0610_frame_t *s, const uint8_t c[])
+SPAN_DECLARE(int) gsm0610_unpack_wav49(gsm0610_frame_t *s, const uint8_t c[])
 {
     uint16_t sr;
     int i;
@@ -264,7 +266,7 @@ int gsm0610_unpack_wav49(gsm0610_frame_t *s, const uint8_t c[])
 }
 /*- End of function --------------------------------------------------------*/
 
-int gsm0610_unpack_voip(gsm0610_frame_t *s, const uint8_t c[33])
+SPAN_DECLARE(int) gsm0610_unpack_voip(gsm0610_frame_t *s, const uint8_t c[33])
 {
     int i;
 
@@ -309,50 +311,44 @@ int gsm0610_unpack_voip(gsm0610_frame_t *s, const uint8_t c[33])
 }
 /*- End of function --------------------------------------------------------*/
 
-int gsm0610_decode(gsm0610_state_t *s, int16_t amp[], const uint8_t code[], int quant)
+SPAN_DECLARE(int) gsm0610_decode(gsm0610_state_t *s, int16_t amp[], const uint8_t code[], int len)
 {
     gsm0610_frame_t frame[2];
-    const uint8_t *c;
     int bytes;
+    int samples;
     int i;
 
-    c = code;
-    for (i = 0;  i < quant;  i++)
+    samples = 0;
+    for (i = 0;  i < len;  i += bytes)
     {
         switch (s->packing)
         {
         default:
         case GSM0610_PACKING_NONE:
-            if ((bytes = gsm0610_unpack_none(frame, c)) >= 0)
-            {
-                decode_a_frame(s, amp, frame);
-                amp += GSM0610_FRAME_LEN;
-            }
+            if ((bytes = gsm0610_unpack_none(frame, &code[i])) < 0)
+                return 0;
+            decode_a_frame(s, &amp[samples], frame);
+            samples += GSM0610_FRAME_LEN;
             break;
         case GSM0610_PACKING_WAV49:
-            if ((bytes = gsm0610_unpack_wav49(frame, c)) >= 0)
-            {
-                decode_a_frame(s, amp, frame);
-                amp += GSM0610_FRAME_LEN;
-                decode_a_frame(s, amp, frame + 1);
-                amp += GSM0610_FRAME_LEN;
-            }
+            if ((bytes = gsm0610_unpack_wav49(frame, &code[i])) < 0)
+                return 0;
+            decode_a_frame(s, &amp[samples], frame);
+            samples += GSM0610_FRAME_LEN;
+            decode_a_frame(s, &amp[samples], frame + 1);
+            samples += GSM0610_FRAME_LEN;
             break;
         case GSM0610_PACKING_VOIP:
-            if ((bytes = gsm0610_unpack_voip(frame, c)) >= 0)
-            {
-                decode_a_frame(s, amp, frame);
-                amp += GSM0610_FRAME_LEN;
-            }
+            if ((bytes = gsm0610_unpack_voip(frame, &code[i])) < 0)
+                return 0;
+            decode_a_frame(s, &amp[samples], frame);
+            samples += GSM0610_FRAME_LEN;
             break;
         }
         /*endswitch*/
-        if (bytes < 0)
-            return 0;
-        c += bytes;
     }
-    /*endwhile*/
-    return quant*GSM0610_FRAME_LEN;
+    /*endfor*/
+    return samples;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

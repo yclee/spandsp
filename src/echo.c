@@ -15,19 +15,19 @@
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU Lesser General Public License version 2.1,
+ * as published by the Free Software Foundation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: echo.c,v 1.20 2006/12/01 18:00:48 steveu Exp $
+ * $Id: echo.c,v 1.33 2009/09/22 13:11:04 steveu Exp $
  */
 
 /*! \file */
@@ -78,19 +78,31 @@
    for the 32 bit values. We loose the fractions, but they should soon settle down in a
    reasonable way. */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
 #endif
 
-#include <stdlib.h>
 #include <inttypes.h>
+#include <stdlib.h>
+#if defined(HAVE_TGMATH_H)
+#include <tgmath.h>
+#endif
+#if defined(HAVE_MATH_H)
+#include <math.h>
+#endif
+#include "floating_fudge.h"
 #include <string.h>
 #include <stdio.h>
 
 #include "spandsp/telephony.h"
+#include "spandsp/fast_convert.h"
 #include "spandsp/logging.h"
+#include "spandsp/saturated.h"
+#include "spandsp/dc_restore.h"
 #include "spandsp/bit_operations.h"
 #include "spandsp/echo.h"
+
+#include "spandsp/private/echo.h"
 
 #if !defined(NULL)
 #define NULL (void *) 0
@@ -101,6 +113,8 @@
 #if !defined(TRUE)
 #define TRUE (!FALSE)
 #endif
+
+#define NONUPDATE_DWELL_TIME        600     /* 600 samples, or 75ms */
 
 #define MIN_TX_POWER_FOR_ADAPTION   64*64
 #define MIN_RX_POWER_FOR_ADAPTION   64*64
@@ -226,14 +240,13 @@ static __inline__ void lms_adapt(echo_can_state_t *ec, int factor)
 }
 /*- End of function --------------------------------------------------------*/
 
-echo_can_state_t *echo_can_create(int len, int adaption_mode)
+SPAN_DECLARE(echo_can_state_t *) echo_can_init(int len, int adaption_mode)
 {
     echo_can_state_t *ec;
     int i;
     int j;
 
-    ec = (echo_can_state_t *) malloc(sizeof(*ec));
-    if (ec == NULL)
+    if ((ec = (echo_can_state_t *) malloc(sizeof(*ec))) == NULL)
         return  NULL;
     memset(ec, 0, sizeof(*ec));
     ec->taps = len;
@@ -268,11 +281,17 @@ echo_can_state_t *echo_can_create(int len, int adaption_mode)
     ec->tap_rotate_counter = 1600;
     ec->cng_level = 1000;
     echo_can_adaption_mode(ec, adaption_mode);
-    return  ec;
+    return ec;
 }
 /*- End of function --------------------------------------------------------*/
 
-void echo_can_free(echo_can_state_t *ec)
+SPAN_DECLARE(int) echo_can_release(echo_can_state_t *ec)
+{
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int) echo_can_free(echo_can_state_t *ec)
 {
     int i;
     
@@ -281,16 +300,17 @@ void echo_can_free(echo_can_state_t *ec)
     for (i = 0;  i < 4;  i++)
         free(ec->fir_taps16[i]);
     free(ec);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-void echo_can_adaption_mode(echo_can_state_t *ec, int adaption_mode)
+SPAN_DECLARE(void) echo_can_adaption_mode(echo_can_state_t *ec, int adaption_mode)
 {
     ec->adaption_mode = adaption_mode;
 }
 /*- End of function --------------------------------------------------------*/
 
-void echo_can_flush(echo_can_state_t *ec)
+SPAN_DECLARE(void) echo_can_flush(echo_can_state_t *ec)
 {
     int i;
 
@@ -333,7 +353,52 @@ void echo_can_flush(echo_can_state_t *ec)
 
 int sample_no = 0;
 
-int16_t echo_can_update(echo_can_state_t *ec, int16_t tx, int16_t rx)
+SPAN_DECLARE(void) echo_can_snapshot(echo_can_state_t *ec)
+{
+    memcpy(ec->snapshot, ec->fir_taps16[0], ec->taps*sizeof(int16_t));
+}
+/*- End of function --------------------------------------------------------*/
+
+static __inline__ int16_t echo_can_hpf(int32_t coeff[2], int16_t amp)
+{
+    int32_t z;
+
+    /* 
+       Filter DC, 3dB point is 160Hz (I think), note 32 bit precision required
+       otherwise values do not track down to 0. Zero at DC, Pole at (1-Beta)
+       only real axis.  Some chip sets (like Si labs) don't need
+       this, but something like a $10 X100P card does.  Any DC really slows
+       down convergence.
+
+       Note: removes some low frequency from the signal, this reduces
+       the speech quality when listening to samples through headphones
+       but may not be obvious through a telephone handset.
+                                                                    
+       Note that the 3dB frequency in radians is approx Beta, e.g. for
+       Beta = 2^(-3) = 0.125, 3dB freq is 0.125 rads = 159Hz.
+
+       This is one of the classic DC removal filters, adjusted to provide sufficient
+       bass rolloff to meet the above requirement to protect hybrids from things that
+       upset them. The difference between successive samples produces a lousy HPF, and
+       then a suitably placed pole flattens things out. The final result is a nicely
+       rolled off bass end. The filtering is implemented with extended fractional
+       precision, which noise shapes things, giving very clean DC removal.
+
+       Make sure the gain of the HPF is 1.0. The first can still saturate a little under
+       impulse conditions, and it might roll to 32768 and need clipping on sustained peak
+       level signals. However, the scale of such clipping is small, and the error due to
+       any saturation should not markedly affect the downstream processing. */
+    z = amp << 15;
+    z -= (z >> 4);
+    coeff[0] += z - (coeff[0] >> 3) - coeff[1];
+    coeff[1] = z;
+    z = coeff[0] >> 15;
+
+    return saturate(z);
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int16_t) echo_can_update(echo_can_state_t *ec, int16_t tx, int16_t rx)
 {
     int32_t echo_value;
     int clean_rx;
@@ -342,6 +407,9 @@ int16_t echo_can_update(echo_can_state_t *ec, int16_t tx, int16_t rx)
     int i;
 
 sample_no++;
+    if (ec->adaption_mode & ECHO_CAN_USE_RX_HPF)
+        rx = echo_can_hpf(ec->rx_hpf, rx);
+
     ec->latest_correction = 0;
     /* Evaluate the echo - i.e. apply the FIR filter */
     /* Assume the gain of the FIR does not exceed unity. Exceeding unity
@@ -542,6 +610,14 @@ printf("Narrowband score %4d %5d at %d\n", ec->narrowband_score, score, sample_n
         ec->curr_pos = ec->taps;
     ec->curr_pos--;
     return (int16_t) clean_rx;
+}
+/*- End of function --------------------------------------------------------*/
+
+SPAN_DECLARE(int16_t) echo_can_hpf_tx(echo_can_state_t *ec, int16_t tx)
+{
+    if (ec->adaption_mode & ECHO_CAN_USE_TX_HPF)
+        tx = echo_can_hpf(ec->tx_hpf, tx);
+    return tx;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

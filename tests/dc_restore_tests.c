@@ -22,14 +22,14 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: dc_restore_tests.c,v 1.19 2007/11/10 11:14:57 steveu Exp $
+ * $Id: dc_restore_tests.c,v 1.24 2008/11/30 12:38:27 steveu Exp $
  */
 
 /*! \page dc_restore_tests_page DC restoration tests
 \section dc_restore_tests_page_sec_1 What does it do?
 */
 
-#ifdef HAVE_CONFIG_H
+#if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
 
@@ -37,6 +37,10 @@
 #include <stdio.h>
 #include <memory.h>
 #include <time.h>
+
+//#if defined(WITH_SPANDSP_INTERNALS)
+#define SPANDSP_EXPOSE_INTERNAL_STRUCTURES
+//#endif
 
 #include "spandsp.h"
     
